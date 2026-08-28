@@ -1,0 +1,10 @@
+{
+  "description": "Generates creative content by processing user prompts and references, helping users quickly produce tailored and inspired outputs.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

@@ -1,0 +1,64 @@
+# TRUSTLIFY — WEBTACTICS PARALLAX REFERENCE
+
+Reference:
+https://webtactics.org/
+
+## Purpose
+
+This is a motion/interaction reference only.
+
+Do NOT copy:
+- visual identity
+- typography
+- exact compositions
+- branding
+- copy
+- code
+- assets
+
+Study the interaction principles.
+
+## Motion qualities to study
+
+1. Scroll-driven transformation
+2. Layered depth
+3. Large editorial typography
+4. Spatial background elements
+5. Objects shifting position during scroll
+6. Subtle cursor/mouse interaction
+7. Text reveal/movement
+8. Visual continuity between sections
+9. Strong transition from hero into the next section
+10. Immersive “scroll to explore” feeling
+
+## Trustlify adaptation
+
+Replace generic 3D/brand visuals with:
+
+- fictional Instagram-style post
+- fictional LinkedIn-style post
+- fictional WhatsApp-style message
+- fictional scholarship poster
+- fictional PDF fragment
+- fictional comment
+- suspicious URL
+- source card
+- claim node
+- evidence node
+
+Core transformation:
+
+ONLINE NOISE
+→ CLAIMS
+→ SOURCES
+→ EVIDENCE
+→ VERIFICATION
+→ DECISION
+
+## Important
+
+The reference is inspiration for motion and spatial composition.
+
+Build an original Trustlify implementation.
+
+Do not reproduce the reference site's code, assets, branding, or exact design.

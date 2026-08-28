@@ -1,0 +1,256 @@
+@import 'tailwindcss';
+
+/* ─── TRUSTLIFY DESIGN TOKENS ─────────────────────────────────────────────── */
+@theme {
+  --color-void: #0A0A0F;
+  --color-surface: #111118;
+  --color-surface-2: #1A1025;
+  --color-violet: #7C3AED;
+  --color-violet-dim: #4C1D95;
+  --color-violet-glow: rgba(124, 58, 237, 0.15);
+  --color-lime: #A3FF12;
+  --color-lime-dim: rgba(163, 255, 18, 0.12);
+  --color-bone: #F8F9FA;
+  --color-soft: #A1A1AA;
+  --color-dim: #52525B;
+  --color-caution: #F5B942;
+  --color-danger: #FF4D5E;
+  --color-border: rgba(255,255,255,0.07);
+  --color-border-violet: rgba(124, 58, 237, 0.3);
+
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  --radius-card: 24px;
+  --radius-pill: 9999px;
+}
+
+/* ─── BASE RESET ───────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: #0A0A0F;
+  color: #F8F9FA;
+  font-family: 'IBM Plex Mono', monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: #0A0A0F;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(163, 255, 18, 0.25);
+  color: #F8F9FA;
+}
+
+/* ─── SCROLLBAR ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(124, 58, 237, 0.4); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(124, 58, 237, 0.7); }
+
+/* ─── FONT UTILITIES ───────────────────────────────────────────────────────── */
+.font-display { font-family: 'Fraunces', Georgia, serif; }
+.font-mono { font-family: 'IBM Plex Mono', monospace; }
+
+/* ─── KEYFRAME ANIMATIONS ──────────────────────────────────────────────────── */
+
+/* Ambient float — very slow, subtle depth */
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) translateX(0px); opacity: 0.4; }
+  33% { transform: translateY(-12px) translateX(6px); opacity: 0.7; }
+  66% { transform: translateY(8px) translateX(-4px); opacity: 0.3; }
+}
+
+@keyframes float-medium {
+  0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.3; }
+  50% { transform: translateY(-18px) rotate(1.5deg); opacity: 0.6; }
+}
+
+/* Violet pulse ring */
+@keyframes pulse-violet {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(124, 58, 237, 0); }
+}
+
+/* SVG line drawing */
+@keyframes draw-line {
+  from { stroke-dashoffset: 400; }
+  to { stroke-dashoffset: 0; }
+}
+
+/* Fade up entrance */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Progress pulse */
+@keyframes progress-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Ambient particle drift */
+@keyframes particle-drift {
+  0% { transform: translate(0, 0) scale(1); opacity: 0; }
+  10% { opacity: 0.6; }
+  90% { opacity: 0.6; }
+  100% { transform: translate(var(--dx, 30px), var(--dy, -60px)) scale(0.5); opacity: 0; }
+}
+
+/* Glow breathe */
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.7; }
+}
+
+/* Connection line draw-in */
+@keyframes connection-draw {
+  from { stroke-dashoffset: 200; opacity: 0; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+
+/* ─── ANIMATION CLASSES ────────────────────────────────────────────────────── */
+.animate-float-slow { animation: float-slow 8s ease-in-out infinite; }
+.animate-float-medium { animation: float-medium 6s ease-in-out infinite; }
+.animate-pulse-violet { animation: pulse-violet 2s ease-in-out infinite; }
+.animate-fade-up { animation: fade-up 0.6s ease-out forwards; }
+.animate-progress-pulse { animation: progress-pulse 1.5s ease-in-out infinite; }
+.animate-glow-breathe { animation: glow-breathe 4s ease-in-out infinite; }
+
+/* ─── CINEMATIC HERO ANIMATIONS ───────────────────────────────────────────── */
+@keyframes hero-orbit-slow {
+  from { transform: rotate(0deg); transform-origin: 50% 50%; }
+  to { transform: rotate(360deg); transform-origin: 50% 50%; }
+}
+
+@keyframes hero-particle-pulse {
+  0%, 100% { opacity: 0.16; transform: scale(0.82); }
+  50% { opacity: 0.75; transform: scale(1.28); }
+}
+
+@keyframes hero-star-drift {
+  0%, 100% { opacity: 0.08; transform: translate3d(0,0,0); }
+  45% { opacity: 0.55; transform: translate3d(8px,-14px,0); }
+  70% { opacity: 0.28; transform: translate3d(-5px,7px,0); }
+}
+
+.hero-orbit-slow {
+  animation: hero-orbit-slow 52s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.hero-particle-pulse {
+  animation: hero-particle-pulse 5.5s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.hero-star {
+  background: rgba(248, 249, 250, 0.45);
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.35);
+  animation: hero-star-drift 7s ease-in-out infinite;
+}
+
+.hero-artifact {
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-artifact::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(135deg, rgba(255,255,255,0.10), transparent 32%, rgba(124,58,237,0.08));
+  opacity: 0.65;
+}
+
+.hero-artifact > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── GLOW EFFECTS ─────────────────────────────────────────────────────────── */
+.glow-violet { box-shadow: 0 0 24px rgba(124, 58, 237, 0.3), 0 0 48px rgba(124, 58, 237, 0.1); }
+.glow-lime { box-shadow: 0 0 16px rgba(163, 255, 18, 0.3), 0 0 32px rgba(163, 255, 18, 0.1); }
+.text-glow-lime { text-shadow: 0 0 20px rgba(163, 255, 18, 0.5); }
+
+/* ─── GRADIENT TEXT ────────────────────────────────────────────────────────── */
+.text-gradient-violet {
+  background: linear-gradient(135deg, #7C3AED 0%, #A855F7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── CARD STYLES ──────────────────────────────────────────────────────────── */
+.card-noir {
+  background: #111118;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 24px;
+}
+
+.card-noir-violet {
+  background: linear-gradient(135deg, #111118 0%, rgba(124, 58, 237, 0.06) 100%);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+  border-radius: 24px;
+}
+
+/* ─── SCROLLBAR HIDE ───────────────────────────────────────────────────────── */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+
+/* ─── REDUCED MOTION ───────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-float-slow,
+  .animate-float-medium,
+  .animate-pulse-violet,
+  .animate-glow-breathe,
+  .hero-orbit-slow,
+  .hero-particle-pulse,
+  .hero-star {
+    animation: none !important;
+  }
+}
+
+/* ─── REACT FLOW OVERRIDES ─────────────────────────────────────────────────── */
+.react-flow__background {
+  background: #0A0A0F !important;
+}
+.react-flow__minimap {
+  background: #111118 !important;
+  border: 1px solid rgba(255,255,255,0.07) !important;
+  border-radius: 12px !important;
+}
+.react-flow__controls {
+  border: 1px solid rgba(255,255,255,0.07) !important;
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: #111118 !important;
+  border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+  fill: #A1A1AA !important;
+}
+.react-flow__controls-button:hover {
+  background: rgba(124, 58, 237, 0.15) !important;
+}
