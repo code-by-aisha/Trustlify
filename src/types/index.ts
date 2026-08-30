@@ -28,20 +28,21 @@ export type SourceType =
   | 'fact_check'
   | 'community'
   | 'user_submitted'
+  | 'social'
+  | 'unknown'
 
 /** Evidence relation to a claim */
 export type EvidenceRelation = 'supports' | 'contradicts' | 'neutral'
 
-/** Investigation stages */
+/** Investigation lifecycle status (backend is authoritative) */
+export type InvestigationStatus = 'created' | 'processing' | 'complete' | 'failed'
+
+/** Investigation stages — the real Phase 3C mini pipeline */
 export type InvestigationStage =
   | 'NORMALIZING'
   | 'CLAIMS'
   | 'SEARCH'
-  | 'EVIDENCE'
-  | 'INVESTIGATING'
-  | 'VERIFYING'
-  | 'MATCHING'
-  | 'DECIDING'
+  | 'SOURCES'
   | 'COMPLETE'
 
 /** Input types */
@@ -65,9 +66,10 @@ export interface Claim {
   id: string
   text: string
   type: string
-  importance: 'critical' | 'moderate' | 'low'
+  importance: 'critical' | 'important' | 'supporting'
   status?: string
   reasoningSummary?: string
+  createdAt?: string
 }
 
 export interface Source {
@@ -77,12 +79,15 @@ export interface Source {
   title: string
   domain: string
   sourceType: SourceType
+  /** Untrusted search-result snippet — inert data, not evidence */
+  snippet?: string
   publisher?: string
   publishedAt?: string
   updatedAt?: string
   retrievedAt: string
-  authorityLevel: SourceTier
-  accessStatus: 'ok' | 'blocked' | 'timeout' | 'not_found'
+  createdAt?: string
+  authorityLevel?: SourceTier
+  accessStatus?: 'ok' | 'blocked' | 'timeout' | 'not_found'
 }
 
 export interface Evidence {
@@ -102,14 +107,37 @@ export interface Investigation {
   inputType: InputType
   inputText?: string
   inputFileUrl?: string
-  status: InvestigationStage
+  status: InvestigationStatus
+  currentStage?: InvestigationStage
   verdict?: Verdict
   trustScore?: number
+  searchQuery?: string | null
+  selectedClaimId?: string | null
+  errorMessage?: string | null
   claims: Claim[]
   sources: Source[]
   evidence: Evidence[]
+  events?: InvestigationEvent[]
   createdAt: string
   updatedAt: string
+}
+
+/** Internal investigation event types (derived from persisted rows) */
+export type InvestigationEventType =
+  | 'STAGE_CHANGED'
+  | 'CLAIM_CREATED'
+  | 'SOURCE_DISCOVERED'
+  | 'INVESTIGATION_COMPLETED'
+  | 'INVESTIGATION_FAILED'
+
+export interface InvestigationEvent {
+  type: InvestigationEventType
+  investigationId: string
+  timestamp: string
+  claimId?: string
+  sourceId?: string
+  stage?: string
+  reason?: string
 }
 
 export interface StudentProfile {

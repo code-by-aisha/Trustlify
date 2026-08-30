@@ -88,12 +88,12 @@ describe("Auth middleware interface", () => {
     expect(res.body.error.code).toBe("UNAUTHORIZED");
   });
 
-  it("returns 501 for valid Bearer format (Phase 1 — Supabase not connected)", async () => {
+  it("returns 401 for valid Bearer format with invalid token (Phase 2 — Supabase JWT validation)", async () => {
     const res = await request
       .get("/api/profile")
       .set("Authorization", "Bearer fake-jwt-token");
-    expect(res.status).toBe(501);
-    expect(res.body.error.code).toBe("AUTH_NOT_IMPLEMENTED");
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("UNAUTHORIZED");
   });
 });
 
@@ -103,9 +103,8 @@ describe("Zod validation", () => {
       .post("/api/investigations")
       .set("Authorization", "Bearer fake-token")
       .send({});
-    // Auth middleware runs before validation, so we get 501 first
-    // But if we bypass auth, validation would catch it
-    expect([400, 501]).toContain(res.status);
+    // Auth middleware runs before validation, so we get 401 first
+    expect([400, 401]).toContain(res.status);
   });
 
   it("rejects upload with invalid MIME type", async () => {

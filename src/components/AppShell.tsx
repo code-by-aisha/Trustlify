@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui'
 import { TrustlifyLogo } from '@/components/TrustlifyLogo'
+import { useAuth } from '@/hooks/useAuth'
 
 /* ─── APP SHELL ──────────────────────────────────────────────────────────── */
 
@@ -23,6 +24,7 @@ export function AppShell({ children }: AppShellProps) {
 function AppHeader() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { signOut } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
 
   const navItems = [
@@ -109,6 +111,12 @@ function AppHeader() {
               className="w-full text-left px-4 py-3 font-mono text-xs tracking-wider text-soft hover:text-bone cursor-pointer"
             >
               SETTINGS
+            </button>
+            <button
+              onClick={() => { signOut(); navigate('/'); setMenuOpen(false) }}
+              className="w-full text-left px-4 py-3 font-mono text-xs tracking-wider text-danger hover:text-bone cursor-pointer"
+            >
+              SIGN OUT
             </button>
           </div>
         </div>

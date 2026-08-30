@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui'
+import { apiFetch } from '@/lib/supabase'
 
 type InputMode = 'link' | 'text' | 'image'
 
@@ -20,6 +21,8 @@ export default function Investigate() {
   const [mode, setMode] = useState<InputMode>('link')
   const [input, setInput] = useState('')
   const [dragging, setDragging] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
 
   /* Image upload state */
   const [file, setFile] = useState<File | null>(null)
@@ -61,7 +64,6 @@ export default function Investigate() {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (f) handleFile(f)
-    // Reset so the same file can be selected again
     e.target.value = ''
   }
 
@@ -71,11 +73,59 @@ export default function Investigate() {
     setFileError(null)
   }
 
-  const handleInvestigate = () => {
-    if (mode === 'image') {
-      if (file) navigate('/investigation/demo/progress')
-    } else {
-      if (input.trim()) navigate('/investigation/demo/progress')
+  const handleInvestigate = async () => {
+    setError('')
+    setSubmitting(true)
+
+    try {
+      if (mode === 'image') {
+        if (!file) return
+        // Upload file first, then create investigation
+        const formData = new FormData()
+        formData.append('file', file)
+
+        const { data: { session } } = await import('@/lib/supabase').then(m => m.supabase.auth.getSession())
+        const token = session?.access_token
+
+        const uploadRes = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'}/api/uploads`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: formData,
+        })
+
+        if (!uploadRes.ok) throw new Error('Upload failed')
+        const uploadData = await uploadRes.json()
+
+        const res = await apiFetch('/api/investigations', {
+          method: 'POST',
+          body: JSON.stringify({
+            inputType: file.type === 'application/pdf' ? 'pdf' : 'image',
+            inputFilePath: uploadData.data.storagePath,
+          }),
+        })
+
+        // Start the pipeline — the backend executor runs it asynchronously
+        await apiFetch(`/api/investigations/${res.data.id}/start`, { method: 'POST' })
+
+        navigate(`/investigation/${res.data.id}/progress`)
+      } else {
+        const res = await apiFetch('/api/investigations', {
+          method: 'POST',
+          body: JSON.stringify({
+            inputType: mode === 'link' ? 'url' : 'text',
+            inputText: input.trim(),
+          }),
+        })
+
+        // Start the pipeline — the backend executor runs it asynchronously
+        await apiFetch(`/api/investigations/${res.data.id}/start`, { method: 'POST' })
+
+        navigate(`/investigation/${res.data.id}/progress`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create investigation')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -97,6 +147,14 @@ export default function Investigate() {
             </h1>
             <p className="font-mono text-sm text-dim">Paste a scholarship, internship, job, website, post, message, or claim.</p>
           </div>
+
+          {/* Error */}
+          {error && (
+            <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+              className="mb-4 px-4 py-3 rounded-xl border border-[rgba(255,77,94,0.25)] bg-[rgba(255,77,94,0.06)]">
+              <span className="font-mono text-xs text-danger">{error}</span>
+            </motion.div>
+          )}
 
           {/* Mode selector */}
           <div className="flex gap-2 mb-6 bg-surface p-1.5 rounded-2xl border border-white/[0.06]">
@@ -131,10 +189,8 @@ export default function Investigate() {
                 rows={7} autoFocus />
             ) : (
               <div>
-                {/* Drop zone or preview */}
                 <AnimatePresence mode="wait">
                   {file ? (
-                    /* ── File selected: preview ─────────────────────────── */
                     <motion.div key="preview" initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}
                       className="rounded-xl border border-white/10 p-5">
                       <div className="flex items-start gap-4">
@@ -168,7 +224,6 @@ export default function Investigate() {
                       </div>
                     </motion.div>
                   ) : (
-                    /* ── Drop zone ─────────────────────────────────────── */
                     <motion.div key="dropzone"
                       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                       onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
@@ -192,9 +247,8 @@ export default function Investigate() {
                   )}
                 </AnimatePresence>
 
-                {/* File error */}
-                <AnimatePresence>
-                  {fileError && (
+                {fileError && (
+                  <AnimatePresence>
                     <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                       className="mt-3 px-4 py-2.5 rounded-xl border border-[rgba(255,77,94,0.25)] bg-[rgba(255,77,94,0.06)]">
                       <div className="flex items-center gap-2">
@@ -202,8 +256,8 @@ export default function Investigate() {
                         <span className="font-mono text-[11px] text-danger">{fileError}</span>
                       </div>
                     </motion.div>
-                  )}
-                </AnimatePresence>
+                  </AnimatePresence>
+                )}
               </div>
             )}
           </div>
@@ -224,8 +278,8 @@ export default function Investigate() {
           </div>
 
           <Button variant="lime" size="lg" className="w-full justify-center" onClick={handleInvestigate}
-            disabled={!canInvestigate}>
-            INVESTIGATE →
+            disabled={!canInvestigate || submitting}>
+            {submitting ? 'CREATING INVESTIGATION…' : 'INVESTIGATE →'}
           </Button>
 
           {/* Example prompts */}

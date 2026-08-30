@@ -9,11 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
+    "@xyflow/react": "^12.6.0",
+    "framer-motion": "^12.12.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-router-dom": "^7.6.1",
-    "framer-motion": "^12.12.1",
-    "@xyflow/react": "^12.6.0",
     "zod": "^3.24.4"
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui'
@@ -26,14 +26,31 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export default function Onboarding() {
   const navigate = useNavigate()
-  const { setProfile } = useUserProfile()
+  const { profile, loading: profileLoading, createProfile } = useUserProfile()
   const [step, setStep] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const [form, setForm] = useState({
     name: '', age: '', location: '',
-    education: '', institution: '', year: '',
+    education: '',
     skills: [] as string[], experience: '',
     interests: [] as string[], portfolio: '',
   })
+
+  // Hydrate from the persisted profile once loaded (blank form for new users)
+  useEffect(() => {
+    if (profileLoading) return
+    setForm({
+      name: profile.name || '',
+      age: profile.age != null ? String(profile.age) : '',
+      location: profile.location || '',
+      education: profile.education || '',
+      skills: profile.skills || [],
+      interests: profile.interests || [],
+      experience: profile.experience || '',
+      portfolio: profile.portfolioUrl || '',
+    })
+  }, [profileLoading, profile])
 
   const skillOptions = ['Python', 'Data Analysis', 'Research', 'Writing', 'Design', 'JavaScript', 'Machine Learning', 'Public Speaking', 'Project Management', 'Excel/Sheets']
   const interestOptions = ['Scholarships', 'Internships', 'Research Opportunities', 'Hackathons', 'Courses', 'Jobs', 'Fellowships', 'Conferences']
@@ -42,6 +59,44 @@ export default function Onboarding() {
   const toggleInterest = (s: string) => setForm(f => ({ ...f, interests: f.interests.includes(s) ? f.interests.filter(x => x !== s) : [...f.interests, s] }))
 
   const variants = { initial: { opacity: 0, x: 24 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -24 } }
+
+  const handleComplete = async () => {
+    if (!form.name.trim()) {
+      setError('Please enter your full name.')
+      setStep(0)
+      return
+    }
+    setSaving(true)
+    setError('')
+    const { error: saveError } = await createProfile({
+      displayName: form.name.trim(),
+      role: 'student',
+      education: form.education || null,
+      age: form.age ? Number(form.age) : null,
+      location: form.location || null,
+      skills: form.skills,
+      interests: form.interests,
+      experience: form.experience || null,
+      portfolioUrl: form.portfolio || null,
+    })
+    setSaving(false)
+    if (saveError) {
+      setError('Could not save your profile: ' + saveError)
+      return
+    }
+    setStep(4)
+  }
+
+  if (profileLoading) {
+    return (
+      <div className="min-h-screen bg-void flex items-center justify-center">
+        <div className="flex items-center gap-3">
+          <div className="w-2 h-2 rounded-full bg-violet animate-progress-pulse" />
+          <span className="font-mono text-xs text-dim tracking-wider">LOADING…</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-void flex flex-col px-4 py-12">
@@ -83,14 +138,14 @@ export default function Onboarding() {
                 <h2 className="font-display mb-8" style={{ fontSize: 36, fontWeight: 300 }}>Tell us about yourself.</h2>
                 <div className="space-y-4">
                   <Field label="FULL NAME">
-                    <input className={inputClass} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ahmad Khan" />
+                    <input className={inputClass} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Your full name" />
                   </Field>
                   <div className="grid grid-cols-2 gap-4">
                     <Field label="AGE">
-                      <input className={inputClass} value={form.age} onChange={e => setForm(f => ({ ...f, age: e.target.value }))} placeholder="22" type="number" />
+                      <input className={inputClass} value={form.age} onChange={e => setForm(f => ({ ...f, age: e.target.value }))} placeholder="Your age" type="number" min={1} />
                     </Field>
                     <Field label="LOCATION">
-                      <input className={inputClass} value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="Karachi, Pakistan" />
+                      <input className={inputClass} value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="City, Country" />
                     </Field>
                   </div>
                 </div>
@@ -111,12 +166,6 @@ export default function Onboarding() {
                       <option>MS / Master's</option>
                       <option>PhD</option>
                     </select>
-                  </Field>
-                  <Field label="INSTITUTION">
-                    <input className={inputClass} value={form.institution} onChange={e => setForm(f => ({ ...f, institution: e.target.value }))} placeholder="LUMS, NED University..." />
-                  </Field>
-                  <Field label="YEAR / SEMESTER">
-                    <input className={inputClass} value={form.year} onChange={e => setForm(f => ({ ...f, year: e.target.value }))} placeholder="3rd year, Final year..." />
                   </Field>
                 </div>
               </motion.div>
@@ -175,10 +224,10 @@ export default function Onboarding() {
                   <div className="font-mono text-[10px] text-dim mb-3">YOUR PROFILE</div>
                   <div className="space-y-2">
                     {[
-                      { label: 'Name', value: form.name || 'Aisha' },
-                      { label: 'Education', value: form.education || 'BS Computer Science' },
-                      { label: 'Location', value: form.location || 'Karachi, Pakistan' },
-                      { label: 'Skills', value: form.skills.length ? form.skills.slice(0, 3).join(', ') : 'Python, Research' },
+                      { label: 'Name', value: form.name || '—' },
+                      { label: 'Education', value: form.education || '—' },
+                      { label: 'Location', value: form.location || '—' },
+                      { label: 'Skills', value: form.skills.length ? form.skills.slice(0, 3).join(', ') : '—' },
                     ].map(f => (
                       <div key={f.label} className="flex justify-between">
                         <span className="font-mono text-[10px] text-dim">{f.label}</span>
@@ -192,6 +241,13 @@ export default function Onboarding() {
           </AnimatePresence>
         </div>
 
+        {/* Save error */}
+        {error && (
+          <div className="mb-4 px-4 py-3 rounded-xl border border-[rgba(255,77,94,0.25)] bg-[rgba(255,77,94,0.06)]">
+            <span className="font-mono text-xs text-danger">{error}</span>
+          </div>
+        )}
+
         {/* Navigation */}
         <div className="flex items-center justify-between mt-10">
           {step > 0 && step < 4 ? (
@@ -200,19 +256,12 @@ export default function Onboarding() {
           {step < 4 ? (
             <Button variant="violet" onClick={() => {
               if (step === 3) {
-                setProfile({
-                  name: form.name || 'Aisha',
-                  education: form.education,
-                  location: form.location,
-                  skills: form.skills,
-                  interests: form.interests,
-                  experience: form.experience,
-                  portfolioUrl: form.portfolio,
-                })
+                handleComplete()
+              } else {
+                setStep(s => s + 1)
               }
-              setStep(s => s + 1)
-            }}>
-              {step === 3 ? 'COMPLETE PROFILE' : 'CONTINUE'} →
+            }} disabled={saving}>
+              {saving ? 'SAVING…' : step === 3 ? 'COMPLETE PROFILE' : 'CONTINUE'} →
             </Button>
           ) : (
             <Button variant="lime" size="lg" onClick={() => navigate('/dashboard')}>GO TO DASHBOARD →</Button>

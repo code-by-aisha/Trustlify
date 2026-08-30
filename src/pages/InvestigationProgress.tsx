@@ -1,27 +1,102 @@
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui'
-import { useInvestigation, INVESTIGATION_STAGES } from '@/hooks/useInvestigation'
+import { useInvestigation, INVESTIGATION_STAGES, stageIndexOf } from '@/hooks/useInvestigation'
 
-type StageStatus = 'done' | 'active' | 'pending' | 'conflict'
+type StageStatus = 'done' | 'active' | 'pending' | 'failed'
 
 const statusConfig: Record<StageStatus, { color: string; icon: string; bg: string; border: string }> = {
   done: { color: 'text-lime', icon: '✓', bg: 'bg-lime-dim', border: 'border-[rgba(163,255,18,0.25)]' },
   active: { color: 'text-violet', icon: '●', bg: 'bg-[rgba(124,58,237,0.1)]', border: 'border-[rgba(124,58,237,0.4)]' },
   pending: { color: 'text-dim', icon: '○', bg: 'bg-transparent', border: 'border-white/[0.06]' },
-  conflict: { color: 'text-caution', icon: '⚠', bg: 'bg-[rgba(245,185,66,0.08)]', border: 'border-[rgba(245,185,66,0.25)]' },
+  failed: { color: 'text-danger', icon: '✕', bg: 'bg-[rgba(255,77,94,0.06)]', border: 'border-[rgba(255,77,94,0.25)]' },
+}
+
+/** Real, per-stage detail derived from backend state — never invented. */
+function stageDetail(
+  stageId: string,
+  data: { claimCount: number; sourceCount: number; searchQuery: string | null },
+): string | null {
+  if (stageId === 'CLAIMS' && data.claimCount > 0) {
+    return `${data.claimCount} claim${data.claimCount === 1 ? '' : 's'} extracted`
+  }
+  if (stageId === 'SEARCH' && data.searchQuery) {
+    return `Query: "${data.searchQuery}"`
+  }
+  if (stageId === 'SOURCES' && data.sourceCount > 0) {
+    return `${data.sourceCount} source${data.sourceCount === 1 ? '' : 's'} recorded`
+  }
+  if (stageId === 'SOURCES' && data.sourceCount === 0 && data.searchQuery) {
+    return 'Search returned no results — recorded as an empty source set'
+  }
+  return null
 }
 
 export default function InvestigationProgress() {
   const navigate = useNavigate()
-  const { stageIndex, isComplete, conflictDetected, elapsed } = useInvestigation({ autoStart: true })
+  const { id } = useParams<{ id: string }>()
+  const { investigation, isLoading, error, notFound } = useInvestigation(id)
+
+  /* Real elapsed wall-clock time while the investigation runs */
+  const [elapsed, setElapsed] = useState(0)
+  const isRunning = investigation?.status === 'processing' || investigation?.status === 'created'
+  useEffect(() => {
+    if (!investigation || !isRunning) return
+    const started = Date.now() - elapsed * 1000
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [investigation?.id, isRunning])
+
+  const status = investigation?.status
+  const isComplete = status === 'complete'
+  const isFailed = status === 'failed'
+  const stageIndex = stageIndexOf(investigation?.currentStage)
+  const claimCount = investigation?.claims.length ?? 0
+  const sourceCount = investigation?.sources.length ?? 0
+  const searchQuery = investigation?.searchQuery ?? null
 
   const getStatus = (i: number): StageStatus => {
-    if (conflictDetected && i === 4) return 'conflict'
+    if (isFailed) return i < stageIndex ? 'done' : i === stageIndex ? 'failed' : 'pending'
+    if (isComplete) return 'done'
     if (i < stageIndex) return 'done'
-    if (i === stageIndex) return isComplete ? 'done' : 'active'
+    if (i === stageIndex) return 'active'
     return 'pending'
+  }
+
+  const inputPreview = (investigation?.inputText ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 90)
+
+  /* ─── Loading / error states ─────────────────────────────────────────── */
+
+  if (isLoading && !investigation) {
+    return (
+      <AppShell>
+        <div className="pt-16 min-h-screen flex items-center justify-center px-4">
+          <div className="font-mono text-xs text-dim animate-progress-pulse">LOADING INVESTIGATION…</div>
+        </div>
+      </AppShell>
+    )
+  }
+
+  if (notFound || (!investigation && error)) {
+    return (
+      <AppShell>
+        <div className="pt-16 min-h-screen flex items-center justify-center px-4">
+          <div className="w-full max-w-lg text-center py-20">
+            <div className="font-mono text-xs text-danger mb-3">INVESTIGATION NOT FOUND</div>
+            <p className="font-mono text-[11px] text-dim mb-6">
+              {error || 'This investigation does not exist or you do not have access to it.'}
+            </p>
+            <Button variant="outline" onClick={() => navigate('/investigate')}>NEW INVESTIGATION</Button>
+          </div>
+        </div>
+      </AppShell>
+    )
   }
 
   return (
@@ -29,13 +104,15 @@ export default function InvestigationProgress() {
       <div className="pt-16 min-h-screen flex items-center justify-center px-4">
         <div className="w-full max-w-lg py-20">
           <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} className="text-center mb-12">
-            <div className="font-mono text-[10px] text-dim tracking-wider mb-2">DEMO INVESTIGATION · ID #T-2408-0042</div>
-            <h1 className="font-display mb-3" style={{ fontSize: 36, fontWeight: 300 }}>
-              {isComplete ? 'Investigation Complete' : 'Investigating...'}
-            </h1>
-            <div className="font-mono text-xs text-dim max-w-sm mx-auto">
-              "apply-scholarship.com/fund2025 — Fully Funded Scholarship 2025"
+            <div className="font-mono text-[10px] text-dim tracking-wider mb-2">
+              INVESTIGATION · {(investigation?.id ?? '').toUpperCase().slice(0, 13)}
             </div>
+            <h1 className="font-display mb-3" style={{ fontSize: 36, fontWeight: 300 }}>
+              {isComplete ? 'Investigation Complete' : isFailed ? 'Investigation Failed' : 'Investigating...'}
+            </h1>
+            {inputPreview && (
+              <div className="font-mono text-xs text-dim max-w-sm mx-auto truncate">"{inputPreview}"</div>
+            )}
           </motion.div>
 
           {/* Stages */}
@@ -44,27 +121,28 @@ export default function InvestigationProgress() {
             <div className="space-y-3">
               <AnimatePresence>
                 {INVESTIGATION_STAGES.map((stage, i) => {
-                  const status = getStatus(i)
-                  const cfg = statusConfig[status]
-                  const visible = i <= stageIndex || isComplete
+                  const st = getStatus(i)
+                  const cfg = statusConfig[st]
+                  const reached = isComplete || i <= stageIndex
+                  const detail = stageDetail(stage.id, { claimCount, sourceCount, searchQuery })
                   return (
                     <motion.div key={stage.id}
-                      initial={{ opacity: 0, x: -12 }} animate={{ opacity: visible ? 1 : 0.3, x: visible ? 0 : -4 }}
+                      initial={{ opacity: 0, x: -12 }} animate={{ opacity: reached ? 1 : 0.3, x: reached ? 0 : -4 }}
                       transition={{ duration: 0.3, delay: i * 0.03 }}
                       className={`flex items-start gap-5 p-4 rounded-xl border transition-all duration-500 ${cfg.bg} ${cfg.border}`}>
                       <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 mt-0.5 ring-4 ring-void transition-all ${
-                        status === 'done' ? 'bg-lime'
-                        : status === 'active' ? 'bg-violet animate-progress-pulse'
-                        : status === 'conflict' ? 'bg-caution'
+                        st === 'done' ? 'bg-lime'
+                        : st === 'active' ? 'bg-violet animate-progress-pulse'
+                        : st === 'failed' ? 'bg-danger'
                         : 'bg-dim/40'
                       }`} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className={`font-mono text-xs font-medium ${cfg.color}`}>{stage.label}</span>
-                          {status === 'active' && <span className="font-mono text-[9px] text-violet animate-progress-pulse">RUNNING</span>}
+                          {st === 'active' && <span className="font-mono text-[9px] text-violet animate-progress-pulse">RUNNING</span>}
                         </div>
-                        {(status === 'done' || status === 'conflict' || status === 'active') && (
-                          <div className="font-mono text-[10px] text-dim mt-0.5">{stage.desc}</div>
+                        {reached && (
+                          <div className="font-mono text-[10px] text-dim mt-0.5">{detail ?? stage.desc}</div>
                         )}
                       </div>
                       <span className={`font-mono text-sm flex-shrink-0 ${cfg.color}`}>{cfg.icon}</span>
@@ -75,18 +153,28 @@ export default function InvestigationProgress() {
             </div>
           </div>
 
-          {/* Conflict callout */}
+          {/* Failure callout — real, backend-provided reason */}
           <AnimatePresence>
-            {conflictDetected && (
+            {isFailed && (
               <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                className="mt-6 p-4 rounded-xl border border-[rgba(245,185,66,0.3)] bg-[rgba(245,185,66,0.05)]">
+                className="mt-6 p-4 rounded-xl border border-[rgba(255,77,94,0.3)] bg-[rgba(255,77,94,0.05)]">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-caution text-xs">⚠</span>
-                  <span className="font-mono text-xs text-caution">CONFLICT DETECTED</span>
+                  <span className="text-danger text-xs">⚠</span>
+                  <span className="font-mono text-xs text-danger">INVESTIGATION FAILED</span>
                 </div>
                 <p className="font-mono text-[10px] text-soft">
-                  The deadline shown in the circulating post (Aug 15) conflicts with the official source (Aug 25). This will be flagged in the evidence report.
+                  {investigation?.errorMessage || 'The investigation could not be completed. Please try again.'}
                 </p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Polling connection error (distinct from investigation failure) */}
+          <AnimatePresence>
+            {error && !isFailed && !notFound && (
+              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+                className="mt-6 p-4 rounded-xl border border-[rgba(245,185,66,0.3)] bg-[rgba(245,185,66,0.05)]">
+                <p className="font-mono text-[10px] text-soft">{error}</p>
               </motion.div>
             )}
           </AnimatePresence>
@@ -95,11 +183,22 @@ export default function InvestigationProgress() {
             {isComplete && (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mt-8 text-center">
                 <div className="font-mono text-[10px] text-lime tracking-wider mb-4">
-                  INVESTIGATION COMPLETE · {INVESTIGATION_STAGES.length} stages · {elapsed}s elapsed
+                  INVESTIGATION COMPLETE · {claimCount} claims · {sourceCount} sources · {elapsed}s elapsed
                 </div>
                 <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                  <Button variant="lime" size="lg" onClick={() => navigate('/investigation/demo')}>VIEW RESULTS →</Button>
-                  <Button variant="outline" onClick={() => navigate('/investigation/demo/evidence')}>EVIDENCE GRAPH</Button>
+                  <Button variant="lime" size="lg" onClick={() => navigate(`/investigation/${id}`)}>VIEW RESULTS →</Button>
+                  <Button variant="outline" onClick={() => navigate(`/investigation/${id}/evidence`)}>EVIDENCE GRAPH</Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {isFailed && (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mt-8 text-center">
+                <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                  <Button variant="lime" size="lg" onClick={() => navigate('/investigate')}>NEW INVESTIGATION →</Button>
+                  <Button variant="outline" onClick={() => navigate(`/investigation/${id}/evidence`)}>VIEW COLLECTED DATA</Button>
                 </div>
               </motion.div>
             )}

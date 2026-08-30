@@ -1,15 +1,14 @@
 /**
  * Trustlify Backend — Profile Routes
  *
- * POST /api/profile — Create or update student profile
- * GET  /api/profile — Get current user's profile
- *
- * Phase 1: Returns NOT_IMPLEMENTED (requires Supabase in Phase 2).
+ * POST   /api/profile — Create or upsert student profile
+ * GET    /api/profile — Get current user's profile
+ * PATCH  /api/profile — Update profile fields
  */
 
 import { Router } from "express";
 import { authenticateUser, requireAuthenticatedUser } from "../middleware/auth.js";
-import { createProfileSchema } from "../validators/profile.js";
+import { createProfileSchema, updateProfileSchema } from "../validators/profile.js";
 import * as profileService from "../services/profileService.js";
 
 export const profileRouter = Router();
@@ -37,6 +36,17 @@ profileRouter.get("/", authenticateUser, async (req, res, next) => {
       });
       return;
     }
+    res.json({ success: true, data: profile, requestId: req.requestId });
+  } catch (error) {
+    next(error);
+  }
+});
+
+profileRouter.patch("/", authenticateUser, async (req, res, next) => {
+  try {
+    const user = requireAuthenticatedUser(req);
+    const input = updateProfileSchema.parse(req.body);
+    const profile = await profileService.updateProfile(user.userId, input);
     res.json({ success: true, data: profile, requestId: req.requestId });
   } catch (error) {
     next(error);

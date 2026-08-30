@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from '@/hooks/useAuth'
 
 const Landing = lazy(() => import('./pages/Landing'))
 const Auth = lazy(() => import('./pages/Auth'))
@@ -25,33 +26,39 @@ function PageLoader() {
   )
 }
 
+/** Route guard: redirects to /auth if not authenticated */
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth()
+
+  if (loading) return <PageLoader />
+  if (!user) return <Navigate to="/auth" replace />
+
+  return <>{children}</>
+}
+
 export default function App() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Routes>
-        {/* Marketing */}
+        {/* Public */}
         <Route path="/" element={<Landing />} />
-
-        {/* Auth */}
         <Route path="/auth" element={<Auth />} />
 
-        {/* Student onboarding */}
-        <Route path="/student/onboarding" element={<Onboarding />} />
-
-        {/* App */}
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/investigate" element={<Investigate />} />
+        {/* Protected — require authentication */}
+        <Route path="/student/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
+        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/investigate" element={<ProtectedRoute><Investigate /></ProtectedRoute>} />
 
         {/* Investigation flow */}
-        <Route path="/investigation/:id/progress" element={<InvestigationProgress />} />
-        <Route path="/investigation/:id/evidence" element={<EvidenceGraph />} />
-        <Route path="/investigation/:id/match" element={<StudentMatch />} />
-        <Route path="/investigation/:id" element={<InvestigationResult />} />
+        <Route path="/investigation/:id/progress" element={<ProtectedRoute><InvestigationProgress /></ProtectedRoute>} />
+        <Route path="/investigation/:id/evidence" element={<ProtectedRoute><EvidenceGraph /></ProtectedRoute>} />
+        <Route path="/investigation/:id/match" element={<ProtectedRoute><StudentMatch /></ProtectedRoute>} />
+        <Route path="/investigation/:id" element={<ProtectedRoute><InvestigationResult /></ProtectedRoute>} />
 
-        {/* Other app screens */}
-        <Route path="/monitoring" element={<Monitoring />} />
-        <Route path="/history" element={<History />} />
-        <Route path="/settings" element={<Settings />} />
+        {/* Other protected screens */}
+        <Route path="/monitoring" element={<ProtectedRoute><Monitoring /></ProtectedRoute>} />
+        <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
 
         {/* Catch-all */}
         <Route path="*" element={<Navigate to="/" replace />} />

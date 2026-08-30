@@ -14,16 +14,23 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:5173"),
 
-  // Supabase — required in Phase 2, optional now
-  SUPABASE_URL: z.string().url().optional(),
-  SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
-  SUPABASE_SECRET_KEY: z.string().optional(),
+  // Supabase — required for Phase 2
+  SUPABASE_URL: z.string().url(),
+  SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
+  SUPABASE_SECRET_KEY: z.string().min(1),
 
-  // Model Studio — required in Phase 3, optional now
-  DASHSCOPE_API_KEY: z.string().optional(),
-  MODEL_STUDIO_BASE_URL: z.string().url().optional(),
-  MODEL_STUDIO_PRIMARY_MODEL: z.string().optional(),
-  MODEL_STUDIO_FAST_MODEL: z.string().optional(),
+  // Model Studio — optional (legacy plan)
+  DASHSCOPE_API_KEY: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
+  MODEL_STUDIO_BASE_URL: z.string().url().optional().or(z.literal("")).transform(v => v || undefined),
+  MODEL_STUDIO_PRIMARY_MODEL: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
+  MODEL_STUDIO_FAST_MODEL: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
+
+  // Gemini — Phase 3A (optional at startup; provider fails gracefully when unset)
+  GEMINI_API_KEY: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
+  GEMINI_MODEL: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
+
+  // Tavily — Phase 3B (optional at startup; provider fails gracefully when unset)
+  TAVILY_API_KEY: z.string().min(1).optional().or(z.literal("")).transform(v => v || undefined),
 });
 
 function loadEnv() {

@@ -17,6 +17,9 @@ const SENSITIVE_KEYS = new Set([
   "cookie",
   "supabaseSecretKey",
   "dashscopeApiKey",
+  "geminiApiKey",
+  "GEMINI_API_KEY",
+  "TAVILY_API_KEY",
 ]);
 
 function redact(obj: unknown): unknown {

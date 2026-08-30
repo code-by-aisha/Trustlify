@@ -30,7 +30,7 @@ export function createApp() {
     cors({
       origin: env.FRONTEND_ORIGIN,
       credentials: true,
-      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
       allowedHeaders: ["Content-Type", "Authorization", "X-Request-ID"],
     }),
   );
@@ -76,11 +76,15 @@ export function createApp() {
 
 // --- Server startup ---
 
-// Only start listening when this file is the main entry point (not during tests)
+// Only start listening when this file is the main entry point (not during tests).
+// Handles both POSIX and Windows path separators in process.argv[1].
 const isMainModule =
   typeof process !== "undefined" &&
   process.argv[1] &&
-  (process.argv[1].endsWith("/server.ts") || process.argv[1].endsWith("/server.js"));
+  (process.argv[1].endsWith("/server.ts") ||
+    process.argv[1].endsWith("\\server.ts") ||
+    process.argv[1].endsWith("/server.js") ||
+    process.argv[1].endsWith("\\server.js"));
 
 if (isMainModule) {
   const app = createApp();

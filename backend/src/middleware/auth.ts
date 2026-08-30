@@ -1,41 +1,34 @@
 /**
  * Trustlify Backend — Authentication Middleware
  *
- * Phase 1: Structural interface for authentication.
- * Phase 2: Supabase JWT validation will be wired here.
+ * Phase 2: Real Supabase JWT validation.
  *
  * Architecture:
  *   1. Extract Authorization: Bearer <JWT> header
- *   2. Validate the Supabase JWT
+ *   2. Validate the Supabase JWT via supabase.auth.getUser()
  *   3. Extract user ID from the validated token
- *   4. Attach authenticated user to the request
- *   5. Reject missing or invalid authentication
- *
- * IMPORTANT:
- *   - Do NOT implement custom passwords
- *   - Do NOT create custom session systems
- *   - Supabase Auth is the identity provider
- *   - Never trust a user_id supplied by the frontend
+ *   4. Look up user role from profiles table
+ *   5. Attach authenticated user to the request
+ *   6. Reject missing or invalid authentication
  */
 
 import type { Request, Response, NextFunction } from "express";
 import { AppError } from "./errorHandler.js";
-import type { AuthenticatedUser } from "../types/auth.js";
+import type { AuthenticatedUser, UserRole } from "../types/auth.js";
+import { supabaseAdmin } from "../config/supabase.js";
 
 /**
  * authenticateUser — middleware that requires a valid authenticated session.
  *
- * Phase 1: Always returns 501 NOT_IMPLEMENTED since Supabase Auth is not connected yet.
- * Phase 2: Will validate Supabase JWT and populate req.user.
+ * Validates Supabase JWT and populates req.user.
  */
-export function authenticateUser(
+export async function authenticateUser(
   req: Request,
   _res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const authHeader = req.headers.authorization;
 
-  // Structural check — verify the header format
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     next(
       new AppError(401, "UNAUTHORIZED", "Missing or invalid Authorization header"),
@@ -43,43 +36,89 @@ export function authenticateUser(
     return;
   }
 
-  // Phase 1: Supabase Auth not yet connected — reject with a clear message
-  // Phase 2: Replace this block with Supabase JWT validation
-  //   const token = authHeader.slice(7);
-  //   const { data, error } = await supabase.auth.getUser(token);
-  //   if (error || !data.user) { next(new AppError(401, ...)); return; }
-  //   req.user = { userId: data.user.id, role: ..., email: ... };
-  //   next();
+  const token = authHeader.slice(7);
 
-  next(
-    new AppError(
-      501,
-      "AUTH_NOT_IMPLEMENTED",
-      "Authentication is not yet connected. Supabase Auth will be integrated in Phase 2.",
-    ),
-  );
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+
+    if (error || !data.user) {
+      next(
+        new AppError(
+          401,
+          "UNAUTHORIZED",
+          error?.message ?? "Invalid or expired session",
+        ),
+      );
+      return;
+    }
+
+    // Look up the user's role from the profiles table
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("role")
+      .eq("auth_user_id", data.user.id)
+      .single();
+
+    const role: UserRole = (profile?.role as UserRole) ?? "general";
+
+    req.user = {
+      userId: data.user.id,
+      role,
+      email: data.user.email ?? "",
+    };
+
+    next();
+  } catch (err) {
+    next(
+      new AppError(401, "UNAUTHORIZED", "Token validation failed"),
+    );
+  }
 }
 
 /**
  * optionalAuth — middleware that attaches user info if a valid token is present,
  * but does not reject the request if no token is provided.
- *
- * Phase 1: Always passes through without attaching a user.
  */
-export function optionalAuth(
-  _req: Request,
+export async function optionalAuth(
+  req: Request,
   _res: Response,
   next: NextFunction,
-): void {
-  // Phase 2: Attempt token validation, but call next() regardless
+): Promise<void> {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    next();
+    return;
+  }
+
+  const token = authHeader.slice(7);
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+
+    if (!error && data.user) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("role")
+        .eq("auth_user_id", data.user.id)
+        .single();
+
+      req.user = {
+        userId: data.user.id,
+        role: (profile?.role as UserRole) ?? "general",
+        email: data.user.email ?? "",
+      };
+    }
+  } catch {
+    // Silently ignore — optional auth
+  }
+
   next();
 }
 
 /**
  * requireOwnership — factory that returns middleware checking whether
  * the authenticated user owns the specified resource.
- *
- * The resource owner ID should come from the database, not the request body.
  */
 export function requireOwnership(
   getResourceOwnerId: (req: Request) => Promise<string | null>,

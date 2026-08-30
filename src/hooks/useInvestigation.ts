@@ -1,129 +1,171 @@
 /**
- * Investigation state machine hook.
- * Single source of truth for mock investigation progress.
- * Architecture: replace setTimeout with SSE/WebSocket for real backend.
+ * Investigation state hook.
+ * Polls the backend for REAL investigation state — the backend is the single
+ * source of truth. No timers, no simulated progress, no fake stages.
+ *
+ * Backend contract (Phase 3C):
+ *   GET /api/investigations/:id → { status, currentStage, claims, sources, events, ... }
+ *
+ * Polling continues while status is 'created' or 'processing' and stops on
+ * 'complete' / 'failed'. Polling NEVER triggers AI or search calls — only the
+ * backend investigation executor performs those.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { InvestigationStage } from '@/types'
+import { apiFetch } from '@/lib/supabase'
+import type { Investigation, InvestigationStage } from '@/types'
 
-/* ─── Stage definitions ─────────────────────────────────────────────────── */
+/* ─── Stage definitions (mirrors the backend mini pipeline) ────────────────── */
 
 export interface StageMeta {
   id: InvestigationStage
   label: string
   desc: string
-  duration: number // ms in mock mode
 }
 
 export const INVESTIGATION_STAGES: StageMeta[] = [
-  { id: 'NORMALIZING',   label: 'Reading input',        desc: 'Parsing URL structure, headers, and content signals',        duration: 1200 },
-  { id: 'CLAIMS',        label: 'Extracting claims',     desc: '3 key claims identified and classified',                   duration: 1500 },
-  { id: 'SEARCH',        label: 'Finding sources',       desc: '7 relevant sources located across official and public data', duration: 2000 },
-  { id: 'EVIDENCE',      label: 'Comparing evidence',    desc: 'Cross-referencing sources for consistency',                 duration: 1800 },
-  { id: 'INVESTIGATING', label: 'Investigating deeply',  desc: 'Domain analysis, red flag detection, currentness check',    duration: 1500 },
-  { id: 'VERIFYING',     label: 'Verifying conclusions', desc: 'Assembling evidence relationships',                         duration: 1200 },
-  { id: 'MATCHING',      label: 'Matching profile',      desc: 'Comparing against your student profile',                    duration: 1000 },
-  { id: 'DECIDING',      label: 'Deciding verdict',      desc: 'Computing final evidence score and guidance',               duration: 1200 },
-  { id: 'COMPLETE',      label: 'Investigation complete', desc: 'All checks finished — verdict ready',                      duration: 0 },
+  { id: 'NORMALIZING', label: 'Reading input',        desc: 'Validating and normalizing the submitted content' },
+  { id: 'CLAIMS',      label: 'Extracting claims',     desc: 'AI extracts discrete factual claims' },
+  { id: 'SEARCH',      label: 'Finding sources',       desc: 'One targeted web search built from the priority claim' },
+  { id: 'SOURCES',     label: 'Recording sources',     desc: 'Normalizing and storing discovered sources' },
+  { id: 'COMPLETE',    label: 'Investigation complete', desc: 'Claims and sources recorded — verification arrives in a later phase' },
 ]
 
-/* ─── Hook ───────────────────────────────────────────────────────────────── */
+/**
+ * Map a backend stage string to its index in INVESTIGATION_STAGES.
+ * Unknown/legacy values map to 0 (NORMALIZING) so the UI never crashes on
+ * unexpected data — the backend remains authoritative.
+ */
+export function stageIndexOf(stage: string | null | undefined): number {
+  const index = INVESTIGATION_STAGES.findIndex((s) => s.id === stage)
+  return index >= 0 ? index : 0
+}
+
+/* ─── Hook ─────────────────────────────────────────────────────────────────── */
+
+const POLL_INTERVAL_MS = 1500
+/** Consecutive failed polls before surfacing an error and stopping. */
+const MAX_POLL_FAILURES = 4
 
 export interface UseInvestigationReturn {
-  /** Current stage identifier */
-  currentStage: InvestigationStage
-  /** Index of the current stage (0-based) */
-  stageIndex: number
-  /** Total number of stages */
-  totalStages: number
-  /** Overall progress 0→1 */
-  progress: number
-  /** Metadata for the current stage */
-  stageMeta: StageMeta
-  /** Whether the investigation has completed all stages */
-  isComplete: boolean
-  /** Whether a conflict has been detected (flips at VERIFYING) */
-  conflictDetected: boolean
-  /** Elapsed time in seconds since start */
-  elapsed: number
-  /** Start the investigation from the beginning */
-  start: () => void
-  /** Reset the state machine to idle */
-  reset: () => void
+  /** Full investigation state from the backend (null until first load). */
+  investigation: Investigation | null
+  /** True during the initial fetch. */
+  isLoading: boolean
+  /** Polling/network error message (safe, user-facing). */
+  error: string | null
+  /** True when the investigation does not exist or is not owned by the user. */
+  notFound: boolean
+  /** Trigger an immediate re-fetch. */
+  refresh: () => void
 }
 
 export function useInvestigation(
-  config?: { autoStart?: boolean; speedMultiplier?: number }
+  investigationId: string | undefined,
 ): UseInvestigationReturn {
-  const { autoStart = true, speedMultiplier = 1 } = config ?? {}
+  const [investigation, setInvestigation] = useState<Investigation | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [notFound, setNotFound] = useState(false)
+  const [refreshTick, setRefreshTick] = useState(0)
 
-  const [stageIndex, setStageIndex] = useState(0)
-  const [started, setStarted] = useState(autoStart)
-  const [elapsed, setElapsed] = useState(0)
-  const startTimeRef = useRef<number>(0)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  /** Latest status — kept in a ref so the poll interval can decide to stop. */
+  const statusRef = useRef<string | null>(null)
+  /** Consecutive poll failures (reset on any success). */
+  const failuresRef = useRef(0)
+  const mountedRef = useRef(true)
 
-  const totalStages = INVESTIGATION_STAGES.length
-  const currentMeta = INVESTIGATION_STAGES[stageIndex]
-  const isComplete = stageIndex >= totalStages - 1
-  // Conflict is detected once we reach VERIFYING (index 5) or beyond
-  const conflictDetected = stageIndex >= 5
-
-  /* Advance to next stage after current stage's duration */
-  useEffect(() => {
-    if (!started || isComplete) return
-
-    const duration = currentMeta.duration / speedMultiplier
-    timerRef.current = setTimeout(() => {
-      setStageIndex((i) => Math.min(i + 1, totalStages - 1))
-    }, duration)
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current)
-    }
-  }, [started, stageIndex, isComplete, currentMeta.duration, speedMultiplier, totalStages])
-
-  /* Track elapsed time */
-  useEffect(() => {
-    if (started && !isComplete) {
-      if (!startTimeRef.current) startTimeRef.current = Date.now()
-      elapsedTimerRef.current = setInterval(() => {
-        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000))
-      }, 500)
-    }
-    return () => {
-      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
-    }
-  }, [started, isComplete])
-
-  const start = useCallback(() => {
-    setStageIndex(0)
-    setElapsed(0)
-    startTimeRef.current = Date.now()
-    setStarted(true)
+  const refresh = useCallback(() => {
+    setRefreshTick((t) => t + 1)
   }, [])
 
-  const reset = useCallback(() => {
-    setStageIndex(0)
-    setElapsed(0)
-    startTimeRef.current = 0
-    setStarted(false)
-    if (timerRef.current) clearTimeout(timerRef.current)
-    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
   }, [])
 
-  return {
-    currentStage: currentMeta.id,
-    stageIndex,
-    totalStages,
-    progress: stageIndex / (totalStages - 1),
-    stageMeta: currentMeta,
-    isComplete,
-    conflictDetected,
-    elapsed,
-    start,
-    reset,
-  }
+  useEffect(() => {
+    if (!investigationId) return
+
+    let pollTimer: ReturnType<typeof setTimeout> | null = null
+    let cancelled = false
+
+    const fetchOnce = async (): Promise<'stop' | 'continue'> => {
+      try {
+        const res = await apiFetch(`/api/investigations/${investigationId}`)
+        if (cancelled || !mountedRef.current) return 'stop'
+
+        const inv = res?.data as Investigation | undefined
+        if (!inv) {
+          setNotFound(true)
+          setError('Investigation not found')
+          return 'stop'
+        }
+
+        failuresRef.current = 0
+        setNotFound(false)
+        setError(null)
+        setInvestigation(inv)
+        statusRef.current = inv.status
+
+        if (inv.status === 'complete' || inv.status === 'failed') {
+          return 'stop'
+        }
+        return 'continue'
+      } catch (err) {
+        if (cancelled || !mountedRef.current) return 'stop'
+
+        failuresRef.current += 1
+        if (failuresRef.current === 1) {
+          // Distinguish 404 (not found / forbidden) from transient errors
+          const message = err instanceof Error ? err.message : ''
+          if (/not found|forbidden|access/i.test(message)) {
+            setNotFound(true)
+            setError(message || 'Investigation not found')
+            return 'stop'
+          }
+        }
+        if (failuresRef.current >= MAX_POLL_FAILURES) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Lost connection to the investigation service',
+          )
+          return 'stop'
+        }
+        return 'continue'
+      }
+    }
+
+    const run = async () => {
+      setIsLoading(true)
+      const outcome = await fetchOnce()
+      if (cancelled || !mountedRef.current) return
+      setIsLoading(false)
+
+      if (outcome === 'continue') {
+        const schedule = () => {
+          pollTimer = setTimeout(async () => {
+            if (cancelled || !mountedRef.current) return
+            const next = await fetchOnce()
+            if (next === 'continue' && !cancelled && mountedRef.current) {
+              schedule()
+            }
+          }, POLL_INTERVAL_MS)
+        }
+        schedule()
+      }
+    }
+
+    void run()
+
+    return () => {
+      cancelled = true
+      if (pollTimer) clearTimeout(pollTimer)
+    }
+  }, [investigationId, refreshTick])
+
+  return { investigation, isLoading, error, notFound, refresh }
 }

@@ -1,22 +1,52 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
-import { StatusBadge } from '@/components/ui'
+import { Button } from '@/components/ui'
+import { apiFetch } from '@/lib/supabase'
 
-const monitored = [
-  { id: '1', title: 'HEC Research Fellowship 2025', org: 'Higher Education Commission', verdict: 'verified' as const, deadline: 'Sep 30, 2025', lastChecked: '2 hours ago', monitoring: true, change: null },
-  { id: '2', title: 'Google Summer of Code 2025', org: 'Google Open Source', verdict: 'conflict' as const, deadline: 'Aug 30, 2025', lastChecked: 'Yesterday', monitoring: true,
-    change: { type: 'DEADLINE CHANGE', before: 'August 15, 2025', after: 'August 30, 2025', source: 'Official announcement · gsoc.google.com', date: 'Aug 20, 2025' } },
-  { id: '3', title: 'LUMS MBA Fellowship', org: 'LUMS', verdict: 'verified' as const, deadline: 'Oct 15, 2025', lastChecked: '3 days ago', monitoring: true, change: null },
-]
+interface MonitoringItem {
+  id: string
+  investigationId: string
+  active: boolean
+  lastCheckedAt: string | null
+  createdAt: string
+}
 
 const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5 } }
 
 export default function Monitoring() {
   const navigate = useNavigate()
-  const [cards, setCards] = useState(monitored)
-  const toggleMonitoring = (id: string) => setCards(prev => prev.map(c => c.id === id ? { ...c, monitoring: !c.monitoring } : c))
+  const [items, setItems] = useState<MonitoringItem[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    apiFetch('/api/monitoring')
+      .then(res => setItems(res.data ?? []))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const toggleMonitoring = async (id: string) => {
+    const item = items.find(i => i.id === id)
+    if (!item) return
+    const newActive = !item.active
+
+    // Optimistic update
+    setItems(prev => prev.map(i => i.id === id ? { ...i, active: newActive } : i))
+
+    try {
+      await apiFetch(`/api/monitoring/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: newActive }),
+      })
+    } catch {
+      // Revert on error
+      setItems(prev => prev.map(i => i.id === id ? { ...i, active: !newActive } : i))
+    }
+  }
+
+  const activeCount = items.filter(i => i.active).length
 
   return (
     <AppShell>
@@ -26,76 +56,77 @@ export default function Monitoring() {
             <div className="mb-8">
               <div className="font-mono text-[10px] text-dim tracking-wider mb-2">ACTIVE MONITORING</div>
               <h1 className="font-display" style={{ fontSize: 'clamp(28px,4vw,44px)', fontWeight: 300 }}>
-                Monitoring <span className="text-violet">{cards.filter(c => c.monitoring).length}</span> Opportunities
+                Monitoring <span className="text-violet">{activeCount}</span> Opportunities
               </h1>
             </div>
           </motion.div>
 
-          <div className="space-y-4">
-            {cards.map((card, i) => (
-              <motion.div key={card.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: i * 0.06 }}
-                className={`card-noir p-6 transition-all ${card.change ? 'border-[rgba(245,185,66,0.3)]' : ''}`}>
-                <div className="flex items-start justify-between gap-4 mb-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="font-display text-base mb-0.5" style={{ fontWeight: 300 }}>{card.title}</div>
-                    <div className="font-mono text-[10px] text-dim">{card.org}</div>
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    <StatusBadge status={card.verdict} />
-                    <button onClick={() => toggleMonitoring(card.id)}
-                      className={`relative w-10 h-5 rounded-full transition-all cursor-pointer ${card.monitoring ? 'bg-violet' : 'bg-white/10'}`}>
-                      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${card.monitoring ? 'left-5' : 'left-0.5'}`} />
+          {loading ? (
+            <div className="card-noir p-12 text-center">
+              <div className="flex items-center justify-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-violet animate-progress-pulse" />
+                <span className="font-mono text-xs text-dim">Loading…</span>
+              </div>
+            </div>
+          ) : items.length === 0 ? (
+            /* Empty state */
+            <div className="card-noir p-16 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-[rgba(124,58,237,0.1)] border border-[rgba(124,58,237,0.2)] flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl">👁</span>
+              </div>
+              <div className="font-mono text-sm text-bone mb-2">No monitoring items yet</div>
+              <div className="font-mono text-xs text-dim mb-6 max-w-xs mx-auto">
+                After completing an investigation, you can enable monitoring to track changes in deadlines, requirements, and more.
+              </div>
+              <Button variant="lime" size="sm" onClick={() => navigate('/investigate')}>START AN INVESTIGATION →</Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {items.map((item, i) => (
+                <motion.div key={item.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3, delay: i * 0.06 }}
+                  className="card-noir p-6">
+                  <div className="flex items-start justify-between gap-4 mb-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-display text-base mb-0.5" style={{ fontWeight: 300 }}>Investigation</div>
+                      <div className="font-mono text-[10px] text-dim">{item.investigationId}</div>
+                    </div>
+                    <button onClick={() => toggleMonitoring(item.id)}
+                      className={`relative w-10 h-5 rounded-full transition-all cursor-pointer flex-shrink-0 ${item.active ? 'bg-violet' : 'bg-white/10'}`}>
+                      <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${item.active ? 'left-5' : 'left-0.5'}`} />
                     </button>
                   </div>
-                </div>
 
-                <div className="flex flex-wrap gap-4 mb-4">
-                  <div>
-                    <span className="font-mono text-[9px] text-dim">DEADLINE </span>
-                    <span className="font-mono text-[11px] text-soft">{card.deadline}</span>
-                  </div>
-                  <div>
-                    <span className="font-mono text-[9px] text-dim">LAST CHECKED </span>
-                    <span className="font-mono text-[11px] text-soft">{card.lastChecked}</span>
-                  </div>
-                  <div>
-                    <span className="font-mono text-[9px] text-dim">MONITORING </span>
-                    <span className={`font-mono text-[11px] font-medium ${card.monitoring ? 'text-lime' : 'text-dim'}`}>
-                      {card.monitoring ? 'ON' : 'OFF'}
-                    </span>
-                  </div>
-                </div>
-
-                {card.change && (
-                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-                    className="p-4 rounded-xl border border-[rgba(245,185,66,0.3)] bg-[rgba(245,185,66,0.06)]">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-caution text-sm">⚡</span>
-                      <span className="font-mono text-xs font-semibold text-caution">TRUSTLIFY DETECTED A CHANGE</span>
-                      <span className="font-mono text-[9px] text-dim ml-auto">{card.change.date}</span>
+                  <div className="flex flex-wrap gap-4">
+                    <div>
+                      <span className="font-mono text-[9px] text-dim">STATUS </span>
+                      <span className={`font-mono text-[11px] font-medium ${item.active ? 'text-lime' : 'text-dim'}`}>
+                        {item.active ? 'ACTIVE' : 'PAUSED'}
+                      </span>
                     </div>
-                    <div className="font-mono text-[10px] text-dim mb-2">{card.change.type}</div>
-                    <div className="flex items-center gap-4">
-                      <div className="flex-1 p-3 rounded-lg bg-[rgba(255,77,94,0.06)] border border-[rgba(255,77,94,0.15)]">
-                        <div className="font-mono text-[9px] text-dim mb-1">BEFORE</div>
-                        <div className="font-mono text-xs text-danger">{card.change.before}</div>
+                    {item.lastCheckedAt && (
+                      <div>
+                        <span className="font-mono text-[9px] text-dim">LAST CHECKED </span>
+                        <span className="font-mono text-[11px] text-soft">
+                          {new Date(item.lastCheckedAt).toLocaleDateString()}
+                        </span>
                       </div>
-                      <span className="text-dim text-lg">→</span>
-                      <div className="flex-1 p-3 rounded-lg bg-lime-dim border border-[rgba(163,255,18,0.15)]">
-                        <div className="font-mono text-[9px] text-dim mb-1">AFTER</div>
-                        <div className="font-mono text-xs text-lime">{card.change.after}</div>
-                      </div>
+                    )}
+                    <div>
+                      <span className="font-mono text-[9px] text-dim">CREATED </span>
+                      <span className="font-mono text-[11px] text-soft">
+                        {new Date(item.createdAt).toLocaleDateString()}
+                      </span>
                     </div>
-                    <div className="mt-3 font-mono text-[10px] text-dim">Source: {card.change.source}</div>
-                  </motion.div>
-                )}
+                  </div>
 
-                <button onClick={() => navigate(`/investigation/${card.id}`)} className="mt-4 font-mono text-[10px] text-violet hover:text-[#A855F7] cursor-pointer">
-                  VIEW EVIDENCE →
-                </button>
-              </motion.div>
-            ))}
-          </div>
+                  <button onClick={() => navigate(`/investigation/${item.investigationId}`)}
+                    className="mt-4 font-mono text-[10px] text-violet hover:text-[#A855F7] cursor-pointer">
+                    VIEW INVESTIGATION →
+                  </button>
+                </motion.div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </AppShell>

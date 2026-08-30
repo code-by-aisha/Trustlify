@@ -10,6 +10,7 @@ export type InvestigationStatus =
   | "NORMALIZING"
   | "CLAIMS"
   | "SEARCH"
+  | "SOURCES"
   | "EVIDENCE"
   | "INVESTIGATING"
   | "VERIFYING"
@@ -94,7 +95,12 @@ export type SourceType =
   | "independent"
   | "fact_check"
   | "community"
-  | "user_submitted";
+  | "user_submitted"
+  // Phase 3C conservative classifications (hostname heuristics only):
+  // 'social' for exact-match social platform hosts, 'unknown' whenever the
+  // hostname gives no defensible deterministic signal.
+  | "social"
+  | "unknown";
 
 export type AuthorityLevel = 1 | 2 | 3 | 4;
 

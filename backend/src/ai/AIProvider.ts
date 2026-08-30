@@ -4,7 +4,8 @@
  * Defines the contract for all AI operations.
  * The application depends on this interface, not on any specific SDK.
  *
- * Implementation: ModelStudioProvider (Phase 3)
+ * Implementation: GeminiProvider (Phase 3A — extractClaims live; rest Phase 3B+)
+ * Legacy plan: ModelStudioProvider (placeholder)
  * Future optional: FallbackProvider
  */
 
