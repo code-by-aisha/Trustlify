@@ -25,7 +25,7 @@ export function createApp() {
   // Security headers
   app.use(helmet());
 
-  // CORS — strict origin from environment
+  // CORS — strict origin allowlist from environment (never a wildcard)
   app.use(
     cors({
       origin: env.FRONTEND_ORIGIN,

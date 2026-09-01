@@ -5,8 +5,8 @@ import '@xyflow/react/dist/style.css'
 import { motion } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui'
-import { useInvestigation, INVESTIGATION_STAGES, stageIndexOf } from '@/hooks/useInvestigation'
-import type { Claim, Source } from '@/types'
+import { useInvestigation, stagesForInput, stageIndexOf } from '@/hooks/useInvestigation'
+import type { Claim, Source, Evidence, EvidenceRelation } from '@/types'
 
 /* ─── CUSTOM NODES ────────────────────────────────────────────────────────── */
 
@@ -57,53 +57,139 @@ function primaryClaim(investigation: { claims: Claim[]; selectedClaimId?: string
   )
 }
 
+/* ─── Verified evidence edge styling ────────────────────────────────────── */
+
+const EDGE_BY_RELATION: Record<EvidenceRelation, { label: string; stroke: string; animated: boolean; dashed?: boolean }> = {
+  supports: { label: 'SUPPORTS', stroke: '#A3FF12', animated: true },
+  contradicts: { label: 'CONTRADICTS', stroke: '#FF4D5E', animated: true },
+  neutral: { label: 'NEUTRAL', stroke: '#A1A1AA', animated: false },
+  insufficient: { label: 'INSUFFICIENT', stroke: '#F5B942', animated: false, dashed: true },
+}
+
+/** Claim node tint by deterministic claim status (spec 23). */
+function claimNodeType(status: string | undefined): string {
+  if (status === 'contradicted' || status === 'conflicting') return 'conflict'
+  return 'claim'
+}
+
+/** Layout caps — the backend analyzes at most 8 claims and dedupes sources. */
+const MAX_GRAPH_CLAIMS = 8
+const MAX_GRAPH_SOURCES = 12
+
 /**
  * Build graph nodes/edges from REAL investigation data.
  * Nodes appear only when the backend has actually produced them — no fake
- * nodes, no invented relationships. Every claim→source edge is the neutral
- * DISCOVERED relation: support/contradiction is NOT established this phase.
+ * nodes, no invented relationships. Claim→source edges carry the VERIFIED
+ * evidence relation (supports/contradicts/neutral/insufficient) whose excerpt
+ * was checked against real source content; sources the analysis did not
+ * connect to a claim keep the neutral DISCOVERED edge from the primary claim.
  */
 function buildGraph(investigation: {
   claims: Claim[]
   sources: Source[]
+  evidence: Evidence[]
   selectedClaimId?: string | null
 }): { nodes: Node[]; edges: Edge[] } {
-  const claim = primaryClaim(investigation)
-  if (!claim) return { nodes: [], edges: [] }
+  if (investigation.claims.length === 0) return { nodes: [], edges: [] }
 
-  const nodes: Node[] = [
-    {
-      id: 'claim',
+  const evidence = investigation.evidence
+  const claimsWithEvidence = new Set(evidence.map((item) => item.claimId))
+
+  // Claims that participate in verified evidence (up to the cap); before any
+  // evidence exists the primary claim carries the discovery edges alone.
+  const claimsToRender = investigation.claims
+    .filter((claim) => claimsWithEvidence.has(claim.id))
+    .slice(0, MAX_GRAPH_CLAIMS)
+  const anchor = primaryClaim(investigation)
+  if (claimsToRender.length === 0 && anchor) claimsToRender.push(anchor)
+  if (claimsToRender.length === 0) return { nodes: [], edges: [] }
+  const claimIds = new Set(claimsToRender.map((claim) => claim.id))
+
+  // Evidence sources first (they carry the real relationships), then the
+  // remaining discovered sources, up to the layout cap.
+  const evidenceSourceIds = new Set(
+    evidence.filter((item) => claimIds.has(item.claimId)).map((item) => item.sourceId),
+  )
+  const sourcesToRender = [
+    ...investigation.sources.filter((source) => evidenceSourceIds.has(source.id)),
+    ...investigation.sources.filter((source) => !evidenceSourceIds.has(source.id)),
+  ].slice(0, MAX_GRAPH_SOURCES)
+
+  const nodes: Node[] = []
+  const edges: Edge[] = []
+
+  /* Claim row (bottom) */
+  const claimStep = claimsToRender.length > 1 ? 900 / (claimsToRender.length - 1) : 0
+  claimsToRender.forEach((claim, i) => {
+    nodes.push({
+      id: `claim-${claim.id}`,
       type: 'evidenceCard',
-      position: { x: 400, y: 260 },
-      data: { label: 'CLAIM', sublabel: truncate(claim.text, 48), nodeType: 'claim', animate: true },
-    },
-  ]
+      position: { x: claimsToRender.length > 1 ? 50 + i * claimStep : 500, y: 360 },
+      data: {
+        label: `CLAIM · ${(claim.status ?? 'pending').toUpperCase()}`,
+        sublabel: truncate(claim.text, 44),
+        nodeType: claimNodeType(claim.status),
+        animate: true,
+      },
+    })
+  })
 
-  const count = investigation.sources.length
-  const spread = count > 1 ? 640 / (count - 1) : 0
-  const startX = count > 1 ? 80 : 400
-
-  const edges: Edge[] = investigation.sources.map((source, i) => {
-    const y = count > 3 && i >= 3 ? 60 : 40
-    const x = count > 3 && i >= 3 ? startX + (i - 3) * spread : startX + i * spread
+  /* Source rows (top) */
+  const perRow = sourcesToRender.length > 6 ? Math.ceil(sourcesToRender.length / 2) : sourcesToRender.length
+  const rowStep = perRow > 1 ? 900 / (perRow - 1) : 0
+  sourcesToRender.forEach((source, i) => {
+    const row = sourcesToRender.length > 6 ? Math.floor(i / perRow) : 0
+    const col = sourcesToRender.length > 6 ? i % perRow : i
     nodes.push({
       id: `src-${source.id}`,
       type: 'evidenceCard',
-      position: { x, y },
-      data: { label: 'SOURCE', sublabel: source.domain || truncate(source.title, 24), nodeType: 'source', animate: true },
+      position: { x: perRow > 1 ? 50 + col * rowStep : 500, y: 40 + row * 120 },
+      data: {
+        label: `SOURCE · ${(source.sourceType ?? 'unknown').toUpperCase()}`,
+        sublabel: source.domain || truncate(source.title, 24),
+        nodeType: 'source',
+        animate: true,
+      },
     })
-    return {
+  })
+
+  /* Verified evidence edges — only real, excerpt-verified relationships */
+  for (const item of evidence) {
+    if (!claimIds.has(item.claimId)) continue
+    if (!sourcesToRender.some((source) => source.id === item.sourceId)) continue
+    const style = EDGE_BY_RELATION[item.relation] ?? EDGE_BY_RELATION.neutral
+    edges.push({
+      id: `ev-${item.id}`,
+      source: `claim-${item.claimId}`,
+      target: `src-${item.sourceId}`,
+      label: style.label,
+      animated: style.animated,
+      labelStyle: { fontSize: 8, fontFamily: 'monospace', fill: style.stroke },
+      labelBgStyle: { fill: '#0C0C12' },
+      style: {
+        stroke: style.stroke,
+        strokeWidth: 1.5,
+        ...(style.dashed ? { strokeDasharray: '4 3' } : {}),
+      },
+    })
+  }
+
+  /* Discovery edges for sources the analysis did not connect */
+  const anchoredSourceIds = new Set(edges.map((edge) => edge.target))
+  const anchorId = anchor && claimIds.has(anchor.id) ? anchor.id : claimsToRender[0]!.id
+  for (const source of sourcesToRender) {
+    if (anchoredSourceIds.has(`src-${source.id}`)) continue
+    edges.push({
       id: `edge-${source.id}`,
-      source: 'claim',
+      source: `claim-${anchorId}`,
       target: `src-${source.id}`,
       label: 'DISCOVERED',
       animated: true,
       labelStyle: { fontSize: 8, fontFamily: 'monospace', fill: '#A1A1AA' },
       labelBgStyle: { fill: '#0C0C12' },
       style: { stroke: '#7C3AED', strokeWidth: 1.5 },
-    }
-  })
+    })
+  }
 
   return { nodes, edges }
 }
@@ -119,15 +205,32 @@ interface GraphDetail {
   retrieved: string
   relation: string
   excerpt: string
+  excerptLabel: string
   url?: string
+}
+
+/** Strongest verified relation a source has to any claim. */
+function sourceRelation(sourceId: string, evidence: Evidence[]): string {
+  const relations = evidence.filter((item) => item.sourceId === sourceId).map((item) => item.relation)
+  if (relations.includes('supports')) return 'SUPPORTS'
+  if (relations.includes('contradicts')) return 'CONTRADICTS'
+  if (relations.includes('neutral')) return 'NEUTRAL'
+  if (relations.includes('insufficient')) return 'INSUFFICIENT'
+  return 'DISCOVERED'
 }
 
 function buildDetail(
   nodeId: string,
-  investigation: { claims: Claim[]; sources: Source[]; selectedClaimId?: string | null; createdAt?: string },
+  investigation: {
+    claims: Claim[]
+    sources: Source[]
+    evidence: Evidence[]
+    selectedClaimId?: string | null
+    createdAt?: string
+  },
 ): GraphDetail | null {
-  if (nodeId === 'claim') {
-    const claim = primaryClaim(investigation)
+  if (nodeId.startsWith('claim-')) {
+    const claim = investigation.claims.find((c) => c.id === nodeId.slice(6))
     if (!claim) return null
     return {
       kind: 'claim',
@@ -136,8 +239,9 @@ function buildDetail(
       type: `CLAIM · ${claim.type.replace(/_/g, ' ').toUpperCase()}`,
       published: claim.createdAt ? new Date(claim.createdAt).toLocaleDateString() : '—',
       retrieved: '—',
-      relation: 'PENDING',
-      excerpt: claim.text,
+      relation: (claim.status ?? 'pending').toUpperCase(),
+      excerpt: claim.reasoningSummary || claim.text,
+      excerptLabel: claim.reasoningSummary ? 'DETERMINISTIC CLAIM STATUS REASON' : 'CLAIM TEXT',
     }
   }
 
@@ -145,6 +249,9 @@ function buildDetail(
     const sourceId = nodeId.slice(4)
     const source = investigation.sources.find((s) => s.id === sourceId)
     if (!source) return null
+    const excerpts = investigation.evidence
+      .filter((item) => item.sourceId === sourceId && item.excerpt)
+      .map((item) => item.excerpt)
     return {
       kind: 'source',
       title: source.title,
@@ -153,8 +260,9 @@ function buildDetail(
       // Unknown stays unknown — publication dates are never invented
       published: source.publishedAt ? new Date(source.publishedAt).toLocaleDateString() : 'UNKNOWN',
       retrieved: source.retrievedAt ? new Date(source.retrievedAt).toLocaleDateString() : '—',
-      relation: 'DISCOVERED',
-      excerpt: source.snippet || 'No snippet stored for this source.',
+      relation: sourceRelation(sourceId, investigation.evidence),
+      excerpt: excerpts.length > 0 ? excerpts.join(' … ') : source.snippet || 'No snippet stored for this source.',
+      excerptLabel: excerpts.length > 0 ? 'VERIFIED EVIDENCE EXCERPT' : 'SEARCH SNIPPET (UNVERIFIED DATA)',
       url: source.url,
     }
   }
@@ -165,6 +273,14 @@ function buildDetail(
 const relationColor: Record<string, string> = {
   DISCOVERED: 'text-violet border-[rgba(124,58,237,0.3)] bg-[rgba(124,58,237,0.08)]',
   PENDING: 'text-dim border-white/15 bg-white/[0.04]',
+  SUPPORTED: 'text-lime border-[rgba(163,255,18,0.25)] bg-[rgba(163,255,18,0.08)]',
+  SUPPORTS: 'text-lime border-[rgba(163,255,18,0.25)] bg-[rgba(163,255,18,0.08)]',
+  CONFLICTING: 'text-caution border-[rgba(245,185,66,0.3)] bg-[rgba(245,185,66,0.08)]',
+  CONTRADICTED: 'text-danger border-[rgba(255,77,94,0.3)] bg-[rgba(255,77,94,0.08)]',
+  CONTRADICTS: 'text-danger border-[rgba(255,77,94,0.3)] bg-[rgba(255,77,94,0.08)]',
+  UNSUPPORTED: 'text-caution border-[rgba(245,185,66,0.3)] bg-[rgba(245,185,66,0.08)]',
+  INSUFFICIENT: 'text-dim border-white/15 bg-white/[0.04]',
+  NEUTRAL: 'text-dim border-white/15 bg-white/[0.04]',
 }
 
 /* ─── MAIN COMPONENT ───────────────────────────────────────────────────────── */
@@ -176,8 +292,9 @@ export default function EvidenceGraph() {
   const [selected, setSelected] = useState<string | null>(null)
   const [view, setView] = useState<'graph' | 'list'>('graph')
 
-  const stageIndex = stageIndexOf(investigation?.currentStage)
-  const stageMeta = INVESTIGATION_STAGES[stageIndex]
+  const stages = stagesForInput(investigation?.inputType)
+  const stageIndex = stageIndexOf(investigation?.currentStage, stages)
+  const stageMeta = stages[stageIndex]
   const isRunning = investigation?.status === 'created' || investigation?.status === 'processing'
 
   /* Real graph from real data — recomputed whenever polled state changes */
@@ -187,6 +304,7 @@ export default function EvidenceGraph() {
         ? buildGraph({
             claims: investigation.claims,
             sources: investigation.sources,
+            evidence: investigation.evidence,
             selectedClaimId: investigation.selectedClaimId,
           })
         : { nodes: [] as Node[], edges: [] as Edge[] },
@@ -208,6 +326,7 @@ export default function EvidenceGraph() {
         ? buildDetail(selected, {
             claims: investigation.claims,
             sources: investigation.sources,
+            evidence: investigation.evidence,
             selectedClaimId: investigation.selectedClaimId,
             createdAt: investigation.createdAt,
           })
@@ -258,7 +377,7 @@ export default function EvidenceGraph() {
                 <span className={`font-mono text-[10px] ${isRunning ? 'text-violet' : investigation?.status === 'complete' ? 'text-lime' : 'text-danger'}`}>
                   {stageMeta.label}
                 </span>
-                <span className="font-mono text-[10px] text-dim">· Stage {stageIndex + 1}/{INVESTIGATION_STAGES.length}</span>
+                <span className="font-mono text-[10px] text-dim">· Stage {stageIndex + 1}/{stages.length}</span>
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -286,12 +405,15 @@ export default function EvidenceGraph() {
             </div>
           )}
 
-          {/* Legend — honest: what the graph actually shows this phase */}
+          {/* Legend — honest: what the graph actually shows */}
           <div className="flex flex-wrap items-center gap-4 mb-6">
             {[
               { color: 'bg-violet', label: 'Claim' },
-              { color: 'bg-lime', label: 'Discovered source' },
-              { color: 'bg-violet', label: 'Discovery link (animated)' },
+              { color: 'bg-lime', label: 'Source' },
+              { color: 'bg-lime', label: 'Supports (verified evidence)' },
+              { color: 'bg-danger', label: 'Contradicts (verified evidence)' },
+              { color: 'bg-caution', label: 'Insufficient' },
+              { color: 'bg-violet', label: 'Discovered link' },
             ].map((l, i) => (
               <div key={i} className="flex items-center gap-1.5">
                 <div className={`w-6 h-0.5 rounded ${l.color}`} />
@@ -369,9 +491,7 @@ export default function EvidenceGraph() {
                     </div>
                   </div>
                   <div className="mb-4">
-                    <div className="font-mono text-[9px] text-dim mb-2">
-                      {detail.kind === 'source' ? 'SEARCH SNIPPET (UNVERIFIED DATA)' : 'CLAIM TEXT'}
-                    </div>
+                    <div className="font-mono text-[9px] text-dim mb-2">{detail.excerptLabel}</div>
                     <div className="font-display text-sm text-bone leading-relaxed italic" style={{ fontWeight: 300 }}>{detail.excerpt}</div>
                   </div>
                   <div className="mb-4">

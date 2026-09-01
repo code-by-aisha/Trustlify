@@ -73,22 +73,23 @@ describe("category 6 — deterministic claim selection", () => {
     expect(selectPriorityClaim([])).toBeNull();
   });
 
-  it("selects a critical claim over less important claims", () => {
+  it("selects the organization (identity) claim first per spec 13 tiers — even over a critical deadline", () => {
     const claims: SelectableClaim[] = [
       { text: "Contact email is xyz@example.com", type: "contact", importance: "supporting" },
       { text: "Applications close on September 15, 2026", type: "deadline", importance: "critical" },
       { text: "The program is run by XYZ Trust", type: "organization", importance: "important" },
     ];
+    // Tier order: organization (0) → critical funding (1) → deadline (2) → …
     const selected = selectPriorityClaim(claims);
-    expect(selected?.text).toBe("Applications close on September 15, 2026");
+    expect(selected?.text).toBe("The program is run by XYZ Trust");
   });
 
-  it("breaks importance ties by factual type relevance (deadline > funding > …)", () => {
+  it("breaks type ties by spec 13 tiers: critical funding (tier 1) outranks deadline (tier 2)", () => {
     const claims: SelectableClaim[] = [
       { text: "The scholarship covers tuition and stipend", type: "funding", importance: "critical" },
       { text: "Applications close on September 15, 2026", type: "deadline", importance: "critical" },
     ];
-    expect(selectPriorityClaim(claims)?.type).toBe("deadline");
+    expect(selectPriorityClaim(claims)?.type).toBe("funding");
   });
 
   it("breaks full ties by longer text, then lexicographic order", () => {
@@ -117,8 +118,8 @@ describe("category 6 — deterministic claim selection", () => {
     const a = selectPriorityClaim(shuffled);
     const b = selectPriorityClaim(reversed);
     expect(a?.text).toBe(b?.text);
-    // Deadline beats funding at critical importance
-    expect(a?.text).toBe("Applications close on September 15, 2026");
+    // Critical funding (tier 1) beats deadline (tier 2) per spec 13
+    expect(a?.text).toBe("The XYZ scholarship is fully funded");
   });
 
   it("returns the identical object from the input list (never a copy or new claim)", () => {

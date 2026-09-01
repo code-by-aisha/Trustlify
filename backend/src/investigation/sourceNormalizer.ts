@@ -173,6 +173,94 @@ export function normalizeSearchSources(
   });
 }
 
+/* ─── Dedupe + selection (spec 16/18/19) ─────────────────────────────────── */
+
+/**
+ * Canonical URL key for equivalence: scheme-insensitive host (www stripped),
+ * path (trailing slash normalized), and query string. Hash fragments never
+ * affect page content. Equivalent URLs count as ONE source — duplicates are
+ * never treated as independent evidence.
+ */
+export function canonicalUrlKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const path = parsed.pathname.replace(/\/+$/, "") || "/";
+    const query = parsed.search;
+    return `${host}${path}${query}`;
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
+/**
+ * Remove duplicate sources: same canonical URL (first occurrence wins),
+ * keeping the original order for determinism.
+ */
+export function dedupeSources(sources: NormalizedSource[]): NormalizedSource[] {
+  const seen = new Set<string>();
+  const result: NormalizedSource[] = [];
+  for (const source of sources) {
+    const key = canonicalUrlKey(source.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(source);
+  }
+  return result;
+}
+
+/**
+ * Deterministic selection priority for source content fetching (spec 18/19):
+ *   1. authoritative hostname signals (government/academic)
+ *   2. unique domains (independent sources beat repeats)
+ *   3. non-social pages (social platforms rarely fetch well and are weak evidence)
+ *   4. longer snippets (more apparent content)
+ *   5. original search order (stable tie-breaker)
+ *
+ * Selection NEVER infers official status from titles or snippets — only the
+ * defensible hostname classification from classifySourceType is used.
+ */
+export function selectSourcesForFetch(
+  sources: NormalizedSource[],
+  maxFetches: number,
+): NormalizedSource[] {
+  const scored = sources.map((source, index) => {
+    let score = 0;
+    if (source.sourceType === "government" || source.sourceType === "academic") {
+      score += 100;
+    }
+    if (source.sourceType === "social") {
+      score -= 40;
+    }
+    score += Math.min(source.snippet.length, 600) / 100;
+    return { source, score, index };
+  });
+
+  const sorted = [...scored].sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return a.index - b.index;
+  });
+
+  const selected: NormalizedSource[] = [];
+  const selectedDomains = new Set<string>();
+  for (const entry of sorted) {
+    if (selected.length >= maxFetches) break;
+    // Prefer spreading across distinct domains: skip a duplicate-domain source
+    // while unexplored domains remain among the candidates.
+    if (selectedDomains.has(entry.source.domain)) {
+      const unexplored = sorted.some(
+        (other) => !selectedDomains.has(other.source.domain),
+      );
+      if (unexplored) continue;
+    }
+    selectedDomains.add(entry.source.domain);
+    selected.push(entry.source);
+  }
+
+  // Restore a stable, deterministic output order (original search order)
+  return selected.sort((a, b) => sources.indexOf(a) - sources.indexOf(b));
+}
+
 /* ─── Claim type helper for source labels (display only) ──────────────────── */
 
 export function claimTypeLabel(type: ClaimType): string {

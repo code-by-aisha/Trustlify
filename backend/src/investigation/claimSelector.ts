@@ -1,17 +1,24 @@
 /**
  * Trustlify Backend — Claim Selector + Search Query Builder
  *
- * Phase 3C: deterministic, AI-free selection of the single claim that drives
- * the targeted web search, plus deterministic query generation from that claim.
+ * Deterministic, AI-free ranking of claims (spec 13) and safe query
+ * generation. The LLM NEVER selects claims and NEVER generates search
+ * queries — both are ordinary deterministic code.
  *
- * Rules (spec 07/08):
- *   - ONE claim, selected deterministically — never by a second AI call
- *   - Priority: 1) critical importance  2) factual/date/eligibility relevance
- *               3) stable tie-breaker
- *   - The query is normalized: whitespace, excessive punctuation, and obvious
- *     prompt-injection text are stripped. Search results are DATA, not
- *     instructions — but we still never forward injection-style text into a
- *     query.
+ * Claim priority order (spec 13):
+ *   1. legitimacy/identity      (organization)
+ *   2. critical funding claims  (funding + critical importance)
+ *   3. deadline
+ *   4. eligibility
+ *   5. application/payment requirements (application_url, fee)
+ *   6. other factual claims     (everything else)
+ *
+ * Tie-breaking is fully deterministic: importance, then longer (more
+ * specific) text, then lexicographic order — the same input always ranks
+ * identically.
+ *
+ * Query text is treated as untrusted data: injection phrasing is stripped,
+ * whitespace/punctuation normalized, length capped (spec 14).
  */
 
 import type { ClaimImportance, ClaimType } from "../types/investigation.js";
@@ -34,42 +41,39 @@ const IMPORTANCE_RANK: Record<ClaimImportance, number> = {
 };
 
 /**
- * Factual relevance ranking for search priority. Deadline/eligibility/funding
- * facts are the decisions students act on, so they outrank context.
+ * Spec 13 claim-priority tiers. Lower tier = higher priority.
+ * Funding only occupies tier 1 when critical — a casually-mentioned cost is
+ * an ordinary factual claim (tier 5).
  */
-const TYPE_RANK: Record<ClaimType, number> = {
-  deadline: 0,
-  eligibility: 1,
-  funding: 2,
-  current_status: 3,
-  fee: 4,
-  application_url: 5,
-  opportunity: 6,
-  organization: 7,
-  location: 8,
-  contact: 9,
-  data_request: 10,
-  other: 11,
-};
+export function claimPriorityTier(claim: SelectableClaim): number {
+  switch (claim.type) {
+    case "organization":
+      return 0; // legitimacy/identity
+    case "funding":
+      return claim.importance === "critical" ? 1 : 5; // critical funding claims
+    case "deadline":
+      return 2;
+    case "eligibility":
+      return 3;
+    case "application_url":
+    case "fee":
+      return 4; // application/payment requirements
+    default:
+      return 5; // other factual claims
+  }
+}
 
 /**
- * Select the single highest-priority claim, deterministically.
- *
- * Ordering: importance rank → type rank → longer text (more specific) →
- * lexicographic text (final stable tie-breaker). Ties resolve identically on
- * every run for the same input.
+ * Rank all claims deterministically by spec-13 priority.
+ * Ordering: tier → importance → longer (more specific) text → lexicographic.
  */
-export function selectPriorityClaim<T extends SelectableClaim>(
-  claims: T[],
-): T | null {
-  if (claims.length === 0) return null;
+export function rankClaims<T extends SelectableClaim>(claims: T[]): T[] {
+  return [...claims].sort((a, b) => {
+    const byTier = claimPriorityTier(a) - claimPriorityTier(b);
+    if (byTier !== 0) return byTier;
 
-  const sorted = [...claims].sort((a, b) => {
     const byImportance = IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance];
     if (byImportance !== 0) return byImportance;
-
-    const byType = TYPE_RANK[a.type] - TYPE_RANK[b.type];
-    if (byType !== 0) return byType;
 
     // More specific (longer) claims win; then lexicographic for full stability.
     const byLength = b.text.length - a.text.length;
@@ -77,11 +81,29 @@ export function selectPriorityClaim<T extends SelectableClaim>(
 
     return a.text < b.text ? -1 : a.text > b.text ? 1 : 0;
   });
-
-  return sorted[0];
 }
 
-/* ─── Search query generation ─────────────────────────────────────────────── */
+/**
+ * Select the single highest-priority claim, deterministically.
+ */
+export function selectPriorityClaim<T extends SelectableClaim>(
+  claims: T[],
+): T | null {
+  const ranked = rankClaims(claims);
+  return ranked.length > 0 ? ranked[0] : null;
+}
+
+/**
+ * The first claim of a given type in ranked (priority) order.
+ */
+export function firstClaimOfType<T extends SelectableClaim>(
+  claims: T[],
+  type: ClaimType,
+): T | null {
+  return rankClaims(claims).find((claim) => claim.type === type) ?? null;
+}
+
+/* ─── Search query sanitization (shared with searchPlanner) ───────────────── */
 
 /** Obvious prompt-injection phrasing stripped from query text. */
 const INJECTION_PATTERNS: RegExp[] = [
@@ -94,10 +116,10 @@ const INJECTION_PATTERNS: RegExp[] = [
 ];
 
 const MAX_QUERY_LENGTH = 160;
-/** Suffix biasing the search toward authoritative pages (spec 08). */
+/** Suffix biasing the search toward authoritative pages (spec 08/14). */
 const AUTHORITATIVE_SUFFIX = "official";
 
-function stripInjectionPatterns(text: string): string {
+export function stripInjectionPatterns(text: string): string {
   let out = text;
   for (const pattern of INJECTION_PATTERNS) {
     out = out.replace(pattern, " ");
@@ -105,7 +127,7 @@ function stripInjectionPatterns(text: string): string {
   return out;
 }
 
-function normalizeQueryText(text: string): string {
+export function normalizeQueryText(text: string): string {
   return (
     text
       // collapse all whitespace
@@ -121,15 +143,18 @@ function normalizeQueryText(text: string): string {
   );
 }
 
+/** Sanitize claim text into safe, bounded search-query text. */
+export function sanitizeQueryFragment(text: string): string {
+  return normalizeQueryText(stripInjectionPatterns(text)).replace(/\.+$/, "");
+}
+
 /**
- * Build ONE deterministic search query from the selected claim.
+ * Build ONE deterministic search query from a claim.
  * The claim text is treated as untrusted data: injection phrasing is removed,
  * whitespace/punctuation normalized, length capped.
  */
 export function buildSearchQuery(claim: SelectableClaim): string {
-  const cleaned = normalizeQueryText(stripInjectionPatterns(claim.text))
-    // a trailing sentence period would collide with the appended suffix
-    .replace(/\.+$/, "");
+  const cleaned = sanitizeQueryFragment(claim.text);
   const base = cleaned.length > 0 ? cleaned : claim.type.replace(/_/g, " ");
   const withSuffix = `${base} ${AUTHORITATIVE_SUFFIX}`.replace(/\s+/g, " ").trim();
   return withSuffix.length > MAX_QUERY_LENGTH

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui'
 import { TrustlifyLogo } from '@/components/TrustlifyLogo'
 import { useAuth } from '@/hooks/useAuth'
 import { useUserProfile } from '@/hooks/useUserProfile'
+import { resolvePostAuthRoute } from '@/lib/authRouting'
 
 type AuthMode = 'choose' | 'student' | 'general'
 type AuthView = 'signup' | 'login' | 'forgot' | 'reset-confirm'
@@ -41,7 +42,14 @@ export default function Auth() {
   const [submitting, setSubmitting] = useState(false)
 
   const { user, loading } = useAuth()
-  const { profile, exists: profileExists, loadedFor: profileLoadedFor, loading: profileLoading } = useUserProfile()
+  const {
+    profile,
+    exists: profileExists,
+    notFound: profileNotFound,
+    loadError: profileLoadError,
+    loadedFor: profileLoadedFor,
+    loading: profileLoading,
+  } = useUserProfile()
 
   // Recovery-link landing: /auth?mode=reset-confirm (session comes from the link)
   useEffect(() => {
@@ -62,19 +70,27 @@ export default function Auth() {
   }, [params, user, loading])
 
   // Already authenticated — route by the persisted role once the profile loads.
-  // Users without a profile row yet follow the persona chosen on this page.
+  // Users whose profile row the server confirmed is absent follow the persona
+  // chosen on this page. A profile request that merely failed never sends an
+  // existing user back through first-time onboarding.
   useEffect(() => {
     if (loading || !user || authType === 'reset-confirm') return
     // Wait until the profile state belongs to the signed-in user (avoids stale
     // post-logout state deciding the route)
     if (profileLoading || profileLoadedFor !== user.id) return
-    if (!profileExists) {
-      navigate(mode === 'student' ? '/student/onboarding' : '/dashboard', { replace: true })
-      return
-    }
-    const studentNeedsOnboarding = profile.role === 'student' && !profile.name
-    navigate(studentNeedsOnboarding ? '/student/onboarding' : '/dashboard', { replace: true })
-  }, [user, loading, authType, profileLoading, profileLoadedFor, profileExists, profile, mode, navigate])
+    const route = resolvePostAuthRoute({
+      exists: profileExists,
+      notFound: profileNotFound,
+      loadError: profileLoadError,
+      role: profile.role,
+      name: profile.name,
+      personaMode: mode,
+    })
+    navigate(route.path, { replace: true })
+  }, [
+    user, loading, authType, profileLoading, profileLoadedFor,
+    profileExists, profileNotFound, profileLoadError, profile, mode, navigate,
+  ])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

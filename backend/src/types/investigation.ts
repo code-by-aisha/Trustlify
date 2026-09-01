@@ -5,17 +5,19 @@
  * Phase 1: Type definitions only. Real implementation in later phases.
  */
 
+/**
+ * Investigation stages (spec 32). Every transition is produced by real
+ * backend work — never by timers.
+ */
 export type InvestigationStatus =
   | "CREATED"
   | "NORMALIZING"
-  | "CLAIMS"
-  | "SEARCH"
-  | "SOURCES"
-  | "EVIDENCE"
-  | "INVESTIGATING"
-  | "VERIFYING"
-  | "MATCHING"
-  | "DECIDING"
+  | "EXTRACTING_CONTENT"
+  | "EXTRACTING_CLAIMS"
+  | "SEARCHING"
+  | "READING_SOURCES"
+  | "ANALYZING_EVIDENCE"
+  | "CALCULATING_TRUST"
   | "COMPLETE"
   | "FAILED";
 
@@ -67,7 +69,21 @@ export type ClaimType =
 
 export type ClaimImportance = "critical" | "important" | "supporting";
 
-export type ClaimStatus = "pending" | "supported" | "contradicted" | "conflicting" | "insufficient";
+/**
+ * Claim status per spec 23:
+ *   supported   — credible support, no material contradiction
+ *   conflicting — credible evidence supports AND contradicts
+ *   contradicted — credible contradiction without support
+ *   unsupported — evidence was checked but critical support is absent
+ *   insufficient — not enough reliable evidence exists
+ */
+export type ClaimStatus =
+  | "pending"
+  | "supported"
+  | "contradicted"
+  | "conflicting"
+  | "unsupported"
+  | "insufficient";
 
 export interface Source {
   id: string;
@@ -117,7 +133,11 @@ export interface EvidenceItem {
   verificationStatus: VerificationStatus;
 }
 
-export type EvidenceRelation = "supports" | "contradicts" | "neutral";
+export type EvidenceRelation =
+  | "supports"
+  | "contradicts"
+  | "neutral"
+  | "insufficient";
 
 export type VerificationStatus = "pending" | "approved" | "rejected" | "uncertain";
 

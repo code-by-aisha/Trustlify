@@ -26,7 +26,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export default function Onboarding() {
   const navigate = useNavigate()
-  const { profile, loading: profileLoading, createProfile } = useUserProfile()
+  const {
+    profile,
+    loading: profileLoading,
+    loadError: profileLoadError,
+    reload,
+    createProfile,
+  } = useUserProfile()
   const [step, setStep] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -81,7 +87,8 @@ export default function Onboarding() {
     })
     setSaving(false)
     if (saveError) {
-      setError('Could not save your profile: ' + saveError)
+      // saveError is already a safe, user-facing sentence from the API layer.
+      setError(saveError)
       return
     }
     setStep(4)
@@ -93,6 +100,31 @@ export default function Onboarding() {
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-violet animate-progress-pulse" />
           <span className="font-mono text-xs text-dim tracking-wider">LOADING…</span>
+        </div>
+      </div>
+    )
+  }
+
+  // The profile could not be read. Showing a blank first-time form here would
+  // let a returning student overwrite a profile that simply failed to load,
+  // so the only options offered are retry and continue.
+  if (profileLoadError) {
+    return (
+      <div className="min-h-screen bg-void flex flex-col items-center justify-center px-4 py-12">
+        <div className="max-w-sm w-full text-center">
+          <div className="flex items-center justify-center gap-2 mb-8">
+            <TrustlifyLogo size={6} />
+            <span className="font-mono text-xs tracking-wider text-bone">TRUSTLIFY</span>
+          </div>
+          <div className="font-mono text-[10px] text-caution tracking-wider mb-2">PROFILE NOT LOADED</div>
+          <h2 className="font-display mb-4" style={{ fontSize: 28, fontWeight: 300 }}>We could not verify your profile.</h2>
+          <p className="font-mono text-xs text-dim mb-8">{profileLoadError}</p>
+          <div className="flex flex-col items-center gap-3">
+            <Button variant="violet" onClick={reload}>TRY AGAIN</Button>
+            <button onClick={() => navigate('/dashboard')} className="font-mono text-[10px] text-dim hover:text-soft cursor-pointer">
+              CONTINUE TO DASHBOARD →
+            </button>
+          </div>
         </div>
       </div>
     )

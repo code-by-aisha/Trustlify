@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui'
-import { useInvestigation, INVESTIGATION_STAGES, stageIndexOf } from '@/hooks/useInvestigation'
+import { useInvestigation, stagesForInput, stageIndexOf } from '@/hooks/useInvestigation'
 
 type StageStatus = 'done' | 'active' | 'pending' | 'failed'
 
@@ -17,19 +17,38 @@ const statusConfig: Record<StageStatus, { color: string; icon: string; bg: strin
 /** Real, per-stage detail derived from backend state — never invented. */
 function stageDetail(
   stageId: string,
-  data: { claimCount: number; sourceCount: number; searchQuery: string | null },
+  data: {
+    claimCount: number
+    sourceCount: number
+    evidenceCount: number
+    searchQueries: string[]
+    verdict: string | null
+    domainChanged: boolean
+    inputType: string
+  },
 ): string | null {
-  if (stageId === 'CLAIMS' && data.claimCount > 0) {
+  if (stageId === 'EXTRACTING_CONTENT' && data.inputType === 'url') {
+    return data.domainChanged
+      ? 'Page fetched — the final domain differs from the submitted one (recorded as a signal)'
+      : 'Page fetched and converted to readable text'
+  }
+  if (stageId === 'EXTRACTING_CLAIMS' && data.claimCount > 0) {
     return `${data.claimCount} claim${data.claimCount === 1 ? '' : 's'} extracted`
   }
-  if (stageId === 'SEARCH' && data.searchQuery) {
-    return `Query: "${data.searchQuery}"`
+  if (stageId === 'SEARCHING' && data.searchQueries.length > 0) {
+    return `Queries: ${data.searchQueries.map((q) => `"${q}"`).join(' · ')}`
   }
-  if (stageId === 'SOURCES' && data.sourceCount > 0) {
+  if (stageId === 'READING_SOURCES' && data.sourceCount > 0) {
     return `${data.sourceCount} source${data.sourceCount === 1 ? '' : 's'} recorded`
   }
-  if (stageId === 'SOURCES' && data.sourceCount === 0 && data.searchQuery) {
+  if (stageId === 'READING_SOURCES' && data.sourceCount === 0 && data.searchQueries.length > 0) {
     return 'Search returned no results — recorded as an empty source set'
+  }
+  if (stageId === 'ANALYZING_EVIDENCE' && data.evidenceCount > 0) {
+    return `${data.evidenceCount} evidence item${data.evidenceCount === 1 ? '' : 's'} verified against source content`
+  }
+  if (stageId === 'CALCULATING_TRUST' && data.verdict) {
+    return `Verdict computed: ${data.verdict}`
   }
   return null
 }
@@ -53,10 +72,13 @@ export default function InvestigationProgress() {
   const status = investigation?.status
   const isComplete = status === 'complete'
   const isFailed = status === 'failed'
-  const stageIndex = stageIndexOf(investigation?.currentStage)
+  const stages = stagesForInput(investigation?.inputType)
+  const stageIndex = stageIndexOf(investigation?.currentStage, stages)
   const claimCount = investigation?.claims.length ?? 0
   const sourceCount = investigation?.sources.length ?? 0
-  const searchQuery = investigation?.searchQuery ?? null
+  const evidenceCount = investigation?.evidence.length ?? 0
+  const searchQueries = investigation?.searchQueries ?? (investigation?.searchQuery ? [investigation.searchQuery] : [])
+  const verdict = investigation?.verdict ?? null
 
   const getStatus = (i: number): StageStatus => {
     if (isFailed) return i < stageIndex ? 'done' : i === stageIndex ? 'failed' : 'pending'
@@ -120,11 +142,19 @@ export default function InvestigationProgress() {
             <div className="absolute left-5 top-5 bottom-5 w-px" style={{ background: 'linear-gradient(to bottom, rgba(124,58,237,0.5), rgba(163,255,18,0.3))' }} />
             <div className="space-y-3">
               <AnimatePresence>
-                {INVESTIGATION_STAGES.map((stage, i) => {
+                {stages.map((stage, i) => {
                   const st = getStatus(i)
                   const cfg = statusConfig[st]
                   const reached = isComplete || i <= stageIndex
-                  const detail = stageDetail(stage.id, { claimCount, sourceCount, searchQuery })
+                  const detail = stageDetail(stage.id, {
+                    claimCount,
+                    sourceCount,
+                    evidenceCount,
+                    searchQueries,
+                    verdict,
+                    domainChanged: investigation?.domainChanged ?? false,
+                    inputType: investigation?.inputType ?? 'text',
+                  })
                   return (
                     <motion.div key={stage.id}
                       initial={{ opacity: 0, x: -12 }} animate={{ opacity: reached ? 1 : 0.3, x: reached ? 0 : -4 }}
@@ -183,7 +213,7 @@ export default function InvestigationProgress() {
             {isComplete && (
               <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mt-8 text-center">
                 <div className="font-mono text-[10px] text-lime tracking-wider mb-4">
-                  INVESTIGATION COMPLETE · {claimCount} claims · {sourceCount} sources · {elapsed}s elapsed
+                  INVESTIGATION COMPLETE · {claimCount} CLAIMS · {sourceCount} SOURCES · {evidenceCount} EVIDENCE{verdict ? ` · ${verdict}` : ''} · {elapsed}s
                 </div>
                 <div className="flex flex-col sm:flex-row gap-3 justify-center">
                   <Button variant="lime" size="lg" onClick={() => navigate(`/investigation/${id}`)}>VIEW RESULTS →</Button>

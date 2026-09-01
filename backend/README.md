@@ -54,7 +54,7 @@ Copy `.env.example` to `.env` and fill in values:
 |---|---|---|
 | `NODE_ENV` | No (default: `development`) | `development`, `production`, `test` |
 | `PORT` | No (default: `3000`) | Server port |
-| `FRONTEND_ORIGIN` | No (default: `http://localhost:5173`) | CORS allowed origin |
+| `FRONTEND_ORIGIN` | No (default: `http://localhost:5173`) | CORS allowed origins — comma-separated strict allowlist, never `*` |
 | `SUPABASE_URL` | Phase 2 | Supabase project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | Phase 2 | Supabase anon key |
 | `SUPABASE_SECRET_KEY` | Phase 2 | Supabase service role key |

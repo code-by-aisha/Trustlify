@@ -12,9 +12,9 @@
  *
  *   InputNormalizer → InputType → ContentExtractor → Claims
  *
- * Image/PDF inputs are accepted and validated here (interface boundary) but
- * content extraction for them arrives in a later phase; the mini pipeline
- * rejects their execution with a clear, honest error.
+ * Image/PDF inputs are accepted and validated here (interface boundary) and
+ * their accompanying text — if any — is preserved so one investigation can
+ * carry text AND a file through the same pipeline.
  */
 
 import { z } from "zod";
@@ -34,7 +34,7 @@ export type NormalizedInputType = z.infer<typeof normalizedInputTypeSchema>;
 
 export interface NormalizedInput {
   type: NormalizedInputType;
-  /** Extracted plain content. Null for file inputs until extraction exists. */
+  /** Extracted plain content. Null for file inputs with no accompanying text. */
   content: string | null;
   /** The submitted URL when type is 'url'. Null otherwise. */
   sourceUrl: string | null;
@@ -150,20 +150,31 @@ export function normalizeInvestigationInput(
     };
   }
 
-  // image / pdf — interface boundary only; extraction arrives in Phase 4.
+  // image / pdf — the file is the primary material, but any accompanying text
+  // is PRESERVED as well: one investigation can carry text and a file at the
+  // same time (student-intelligence update). The existing multimodal claim
+  // extraction already accepts both, so no separate image pipeline exists.
   const filePath = (args.inputFilePath ?? "").trim();
   if (!filePath) {
     throw new InputValidationError(
       `${inputType} input requires an inputFilePath`,
     );
   }
+  const accompanying = (args.inputText ?? "").trim();
+  if (accompanying.length > MAX_TEXT_LENGTH) {
+    throw new InputValidationError(
+      `Text accompanying a ${inputType} input exceeds the ${MAX_TEXT_LENGTH} character limit`,
+    );
+  }
   return {
     type: inputType,
-    content: null,
+    content: accompanying || null,
     sourceUrl: null,
     fileId: filePath,
     metadata: {
-      preview: buildPreview(filePath),
+      contentLength: accompanying.length || undefined,
+      // Prefer the user's own words in the preview; fall back to the file ref.
+      preview: buildPreview(accompanying || filePath),
     },
   };
 }

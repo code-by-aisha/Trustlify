@@ -10,7 +10,7 @@ const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, tr
 
 export default function Settings() {
   const [active, setActive] = useState('Profile')
-  const { profile, setProfile } = useUserProfile()
+  const { profile, setProfile, loadError: profileLoadError } = useUserProfile()
   const { user, signOut } = useAuth()
   const [saveMsg, setSaveMsg] = useState('')
   const [saveFailed, setSaveFailed] = useState(false)
@@ -144,6 +144,13 @@ export default function Settings() {
                           className={`font-mono text-[10px] ${saveFailed ? 'text-danger' : 'text-lime'}`}>{saveFailed ? '✗' : '✓'} {saveMsg}</motion.span>
                       )}
                     </div>
+                    {/* A profile we could not read is not an empty profile — say so
+                        instead of leaving the fields silently blank. */}
+                    {profileLoadError && (
+                      <div className="mt-4 px-4 py-3 rounded-xl border border-[rgba(255,183,3,0.25)] bg-[rgba(255,183,3,0.06)]">
+                        <span className="font-mono text-[10px] text-caution">✗ {profileLoadError}</span>
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               )}

@@ -5,11 +5,27 @@
 import { z } from "zod";
 import { urlInputSchema } from "../utils/urls.js";
 
+/**
+ * The optional question is UNTRUSTED user context, kept strictly separate from
+ * inputText (the material claims are extracted from). It is never sent to the
+ * model as an instruction — only length-capped, trimmed and pattern-matched by
+ * the deterministic intent classifier. An empty string means "no question".
+ */
+export const MAX_QUESTION_LENGTH = 500;
+
 export const createInvestigationSchema = z
   .object({
     inputType: z.enum(["url", "text", "image", "pdf"]),
     inputText: z.string().min(1).max(10000).optional(),
     inputFilePath: z.string().max(500).optional(),
+    investigationQuestion: z
+      .string()
+      .max(MAX_QUESTION_LENGTH * 2)
+      .optional()
+      .transform((value) => {
+        const trimmed = (value ?? "").trim();
+        return trimmed ? trimmed.slice(0, MAX_QUESTION_LENGTH) : undefined;
+      }),
   })
   .superRefine((data, ctx) => {
     if (data.inputType === "url") {

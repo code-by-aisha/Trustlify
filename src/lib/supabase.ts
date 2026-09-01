@@ -28,8 +28,31 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey, {
 /** Backend API base URL */
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
 
+/** Shown when the request never produced an HTTP response (backend down, wrong
+ * port, or a blocked cross-origin call). The browser's own text for this is
+ * "Failed to fetch", which is meaningless to a user and hides the real cause. */
+export const BACKEND_UNREACHABLE_MESSAGE =
+  'Unable to reach Trustlify server. Please try again.'
+
+/**
+ * Error carrying the HTTP status so callers can tell "this resource does not
+ * exist" (404) apart from "the request could not be completed" (0 / 401 / 429 /
+ * 5xx). Without this, a transient failure is indistinguishable from a missing
+ * profile and silently sends a returning user through first-time onboarding.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 /**
  * Helper to make authenticated API calls to the backend.
+ * Throws ApiError: status 0 means no HTTP response was received.
  */
 export async function apiFetch(path: string, options: RequestInit = {}) {
   const { data: { session } } = await supabase.auth.getSession()
@@ -44,15 +67,25 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+    })
+  } catch {
+    // Transport-level failure: nothing answered. Never report this as "not found".
+    throw new ApiError(BACKEND_UNREACHABLE_MESSAGE, 0)
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: { message: response.statusText } }))
-    const message = body?.error?.message || body?.message || `Request failed (${response.status})`
-    throw new Error(message)
+    const serverMessage = body?.error?.message || body?.message
+    // 5xx details stay in the server logs — the user gets a safe line.
+    const message = response.status >= 500
+      ? 'Trustlify could not complete that request. Please try again.'
+      : serverMessage || `Request failed (${response.status})`
+    throw new ApiError(message, response.status)
   }
 
   return response.json()

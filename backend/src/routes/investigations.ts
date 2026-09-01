@@ -60,7 +60,11 @@ investigationsRouter.get("/:id", authenticateUser, async (req, res, next) => {
   try {
     const user = requireAuthenticatedUser(req);
     const { id } = idParamSchema.parse(req.params);
-    const investigation = await investigationService.getInvestigation(id, user.userId);
+    // The authenticated role decides whether the student-profile comparison is
+    // read at all — the ownership check inside the service is unchanged.
+    const investigation = await investigationService.getInvestigation(id, user.userId, {
+      role: user.role,
+    });
     res.json({
       success: true,
       data: investigation,

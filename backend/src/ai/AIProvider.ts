@@ -43,6 +43,10 @@ export interface ExtractClaimsInput {
   text: string;
   inputType: string;
   language?: string;
+  /** Inline image/PDF payload for multimodal extraction (base64, no data URL prefix). */
+  fileBase64?: string;
+  /** MIME type of fileBase64 (image/png, image/jpeg, application/pdf…). */
+  fileMimeType?: string;
 }
 
 export interface ExtractClaimsOutput {
@@ -70,8 +74,25 @@ export interface AnalyzeEvidenceInput {
   passages: { sourceId: string; text: string }[];
 }
 
+/** Relation the model may report for a (claim, source) pair (spec 20). */
+export type AnalyzedEvidenceRelation =
+  | "supports"
+  | "contradicts"
+  | "neutral"
+  | "insufficient";
+
+export interface AnalyzedEvidenceItem {
+  claimId: string;
+  sourceId: string;
+  relation: AnalyzedEvidenceRelation;
+  /** Quotation copied from the source content — verified downstream, never trusted. */
+  excerpt: string;
+  reason: string;
+  confidence: "high" | "medium" | "low";
+}
+
 export interface AnalyzeEvidenceOutput {
-  evidence: Pick<EvidenceItem, "claimId" | "sourceId" | "excerpt" | "relation">[];
+  evidence: AnalyzedEvidenceItem[];
 }
 
 export interface VerifyClaimsInput {

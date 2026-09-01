@@ -9,6 +9,7 @@ type InputMode = 'link' | 'text' | 'image'
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'application/pdf']
 const MAX_FILE_SIZE = 20 * 1024 * 1024 // 20MB
+const MAX_QUESTION_LENGTH = 500
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`
@@ -23,11 +24,15 @@ export default function Investigate() {
   const [dragging, setDragging] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  /* Optional question — stored and shown separately from the investigated content */
+  const [question, setQuestion] = useState('')
 
   /* Image upload state */
   const [file, setFile] = useState<File | null>(null)
   const [filePreview, setFilePreview] = useState<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  /* Text typed alongside an image — both are kept in the SAME investigation */
+  const [imageNote, setImageNote] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const examplePlaceholders: Record<InputMode, string> = {
@@ -73,6 +78,12 @@ export default function Investigate() {
     setFileError(null)
   }
 
+  /** Sent only when non-empty — an omitted question changes nothing upstream. */
+  const questionField = () => {
+    const trimmed = question.trim()
+    return trimmed ? { investigationQuestion: trimmed.slice(0, MAX_QUESTION_LENGTH) } : {}
+  }
+
   const handleInvestigate = async () => {
     setError('')
     setSubmitting(true)
@@ -101,6 +112,9 @@ export default function Investigate() {
           body: JSON.stringify({
             inputType: file.type === 'application/pdf' ? 'pdf' : 'image',
             inputFilePath: uploadData.data.storagePath,
+            // Text typed with the image is preserved, never replaced by it
+            ...(imageNote.trim() ? { inputText: imageNote.trim() } : {}),
+            ...questionField(),
           }),
         })
 
@@ -114,6 +128,7 @@ export default function Investigate() {
           body: JSON.stringify({
             inputType: mode === 'link' ? 'url' : 'text',
             inputText: input.trim(),
+            ...questionField(),
           }),
         })
 
@@ -247,6 +262,17 @@ export default function Investigate() {
                   )}
                 </AnimatePresence>
 
+                {/* Text + image in ONE investigation — the file never replaces the text */}
+                <div className="mt-3">
+                  <div className="font-mono text-[10px] text-dim mb-1.5 tracking-wider">
+                    ADD TEXT WITH THIS FILE (OPTIONAL)
+                  </div>
+                  <textarea value={imageNote} onChange={(e) => setImageNote(e.target.value)}
+                    placeholder="Paste the post, message or link that goes with this screenshot — both are investigated together."
+                    rows={3}
+                    className="w-full bg-transparent px-4 py-3 rounded-xl border border-white/10 font-mono text-sm text-bone placeholder:text-dim focus:outline-none resize-none leading-relaxed" />
+                </div>
+
                 {fileError && (
                   <AnimatePresence>
                     <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -260,6 +286,21 @@ export default function Investigate() {
                 )}
               </div>
             )}
+          </div>
+
+          {/* Optional question — stored separately from the investigated content */}
+          <div className="mb-4 rounded-2xl border border-white/[0.06] bg-surface px-4 py-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-mono text-[10px] tracking-wider text-dim">YOUR QUESTION (OPTIONAL)</span>
+              <span className="font-mono text-[10px] text-dim">{question.trim().length}/500</span>
+            </div>
+            <input value={question} onChange={(e) => setQuestion(e.target.value)}
+              maxLength={MAX_QUESTION_LENGTH}
+              placeholder="e.g. Can I apply for this, and am I eligible?"
+              className="w-full bg-transparent font-mono text-sm text-bone placeholder:text-dim focus:outline-none" />
+            <p className="font-mono text-[10px] text-dim mt-1.5">
+              Answered from the evidence this investigation collects — it never changes the verdict.
+            </p>
           </div>
 
           <div className="flex items-center gap-3 mb-8">

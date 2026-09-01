@@ -1,13 +1,13 @@
 /**
  * Trustlify Backend — Investigation Event Model
  *
- * Phase 3C: small internal event representation produced by the mini
- * investigation pipeline. Events are generated ONLY for real occurrences
- * (a claim persisted, a source discovered, a stage transition observed).
+ * Phase 4: internal event representation derived from persisted investigation
+ * rows. Events are generated ONLY for real occurrences (a claim persisted, a
+ * source discovered, an evidence item verified, a stage transition proven).
  *
- * These events later support: live graph, activity timeline, investigation
- * progress, and audit trail. Phase 3C derives them from persisted rows, so
- * they survive page refreshes without a new storage system.
+ * These events support: live graph, activity timeline, investigation progress,
+ * and audit trail. They are derived from the database, so they survive page
+ * refreshes without a new storage system.
  *
  * WebSockets are intentionally NOT used — polling is acceptable this phase.
  */
@@ -16,6 +16,7 @@ export type InvestigationEventType =
   | "STAGE_CHANGED"
   | "CLAIM_CREATED"
   | "SOURCE_DISCOVERED"
+  | "EVIDENCE_FOUND"
   | "INVESTIGATION_COMPLETED"
   | "INVESTIGATION_FAILED";
 
@@ -44,31 +45,50 @@ export interface EventSourceRow {
   createdAt: string;
 }
 
+export interface EventEvidenceRow {
+  id: string;
+  claimId: string;
+  sourceId: string;
+  createdAt: string;
+}
+
 /**
  * Derive the event stream from persisted investigation rows.
  * Deterministic: rows are ordered by timestamp then id, and events are emitted
  * in chronological stage order (stage entry first, then its child events).
  *
- * Stage-change events are synthesized ONLY for stages that provably happened:
- *   CLAIMS  — proven by the existence of claim rows
- *   SEARCH  — proven by a persisted search_query (the stage was entered;
- *             timestamp approximated by the earliest source when present,
- *             otherwise the row's last update)
- *   SOURCES — proven by the existence of source rows
- * No stage is reported without evidence of it in the data.
+ * Stage-change events are synthesized ONLY for stages that provably happened
+ * (spec 32 — no stage is reported without evidence of it in the data):
+ *   NORMALIZING        — proven by the row's creation
+ *   EXTRACTING_CONTENT — url/image/pdf input proven by extracted claims
+ *                        (content must exist before claims do); text input has
+ *                        no content-extraction stage
+ *   EXTRACTING_CLAIMS  — proven by the existence of claim rows
+ *   SEARCHING          — proven by a persisted search_query
+ *   READING_SOURCES    — proven by the existence of source rows
+ *   ANALYZING_EVIDENCE — proven by the existence of evidence rows
+ *   CALCULATING_TRUST  — proven by a persisted verdict
+ *   COMPLETE / FAILED  — proven by the investigation status
+ *
+ * While the investigation is still processing, the persisted currentStage is
+ * appended as the live in-flight stage so polling clients see real progress.
  */
 export function deriveInvestigationEvents(args: {
   investigationId: string;
+  inputType: string;
   claims: EventClaimRow[];
   sources: EventSourceRow[];
+  evidence: EventEvidenceRow[];
   createdAt: string;
   status: string;
   currentStage: string;
   updatedAt: string;
-  /** Persisted search query — proves the SEARCH stage was entered. */
+  /** Persisted search queries — proves the SEARCHING stage was entered. */
   searchQuery?: string | null;
-  /** The claim the targeted search was built from, when persisted. */
-  selectedClaimId?: string | null;
+  /** Persisted verdict — proves the CALCULATING_TRUST stage finished. */
+  verdict?: string | null;
+  /** Safe user-facing failure message on failed investigations. */
+  errorMessage?: string | null;
 }): InvestigationEvent[] {
   const {
     investigationId,
@@ -77,30 +97,40 @@ export function deriveInvestigationEvents(args: {
     currentStage,
     updatedAt,
     searchQuery = null,
-    selectedClaimId = null,
+    verdict = null,
+    errorMessage = null,
   } = args;
 
   const claims = [...args.claims].sort(byTimestampThenId);
   const sources = [...args.sources].sort(byTimestampThenId);
+  const evidence = [...args.evidence].sort(byTimestampThenId);
 
   const events: InvestigationEvent[] = [];
+  const emittedStages = new Set<string>();
 
-  // NORMALIZING is the entry stage of every started investigation; the row's
-  // creation marks input normalization beginning.
-  events.push({
-    type: "STAGE_CHANGED",
-    investigationId,
-    stage: "NORMALIZING",
-    timestamp: createdAt,
-  });
-
-  if (claims.length > 0) {
+  const pushStage = (stage: string, timestamp: string) => {
+    if (emittedStages.has(stage)) return;
+    emittedStages.add(stage);
     events.push({
       type: "STAGE_CHANGED",
       investigationId,
-      stage: "CLAIMS",
-      timestamp: claims[0].createdAt,
+      stage,
+      timestamp,
     });
+  };
+
+  // NORMALIZING is the entry stage of every started investigation; the row's
+  // creation marks input normalization beginning.
+  pushStage("NORMALIZING", createdAt);
+
+  // Content extraction only exists for url/image/pdf inputs — and it
+  // provably happened once claims exist (claims cannot exist without content).
+  if (args.inputType !== "text" && claims.length > 0) {
+    pushStage("EXTRACTING_CONTENT", claims[0].createdAt);
+  }
+
+  if (claims.length > 0) {
+    pushStage("EXTRACTING_CLAIMS", claims[0].createdAt);
   }
   for (const claim of claims) {
     events.push({
@@ -112,35 +142,43 @@ export function deriveInvestigationEvents(args: {
   }
 
   if (searchQuery) {
-    events.push({
-      type: "STAGE_CHANGED",
-      investigationId,
-      stage: "SEARCH",
-      timestamp: sources.length > 0 ? sources[0].createdAt : updatedAt,
-    });
+    pushStage(
+      "SEARCHING",
+      sources.length > 0 ? sources[0].createdAt : updatedAt,
+    );
   }
 
   if (sources.length > 0) {
-    events.push({
-      type: "STAGE_CHANGED",
-      investigationId,
-      stage: "SOURCES",
-      timestamp: sources[0].createdAt,
-    });
+    pushStage("READING_SOURCES", sources[0].createdAt);
   }
   for (const source of sources) {
     events.push({
       type: "SOURCE_DISCOVERED",
       investigationId,
       sourceId: source.id,
-      // The selected claim is the claim the targeted search was built from —
-      // sources were discovered in service of investigating it.
-      ...(selectedClaimId ? { claimId: selectedClaimId } : {}),
       timestamp: source.createdAt,
     });
   }
 
+  if (evidence.length > 0) {
+    pushStage("ANALYZING_EVIDENCE", evidence[0].createdAt);
+  }
+  for (const item of evidence) {
+    events.push({
+      type: "EVIDENCE_FOUND",
+      investigationId,
+      claimId: item.claimId,
+      sourceId: item.sourceId,
+      timestamp: item.createdAt,
+    });
+  }
+
+  if (verdict) {
+    pushStage("CALCULATING_TRUST", updatedAt);
+  }
+
   if (status === "complete") {
+    pushStage("COMPLETE", updatedAt);
     events.push({
       type: "INVESTIGATION_COMPLETED",
       investigationId,
@@ -153,7 +191,12 @@ export function deriveInvestigationEvents(args: {
       investigationId,
       stage: currentStage,
       timestamp: updatedAt,
+      ...(errorMessage ? { reason: errorMessage } : {}),
     });
+  } else if (status === "processing") {
+    // Live in-flight stage — persisted by the executor as it advances. This
+    // is the authoritative current position, not an approximation.
+    pushStage(currentStage, updatedAt);
   }
 
   return events;

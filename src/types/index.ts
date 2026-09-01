@@ -32,17 +32,20 @@ export type SourceType =
   | 'unknown'
 
 /** Evidence relation to a claim */
-export type EvidenceRelation = 'supports' | 'contradicts' | 'neutral'
+export type EvidenceRelation = 'supports' | 'contradicts' | 'neutral' | 'insufficient'
 
 /** Investigation lifecycle status (backend is authoritative) */
 export type InvestigationStatus = 'created' | 'processing' | 'complete' | 'failed'
 
-/** Investigation stages — the real Phase 3C mini pipeline */
+/** Investigation stages — the real evidence-driven pipeline (backend spec 32) */
 export type InvestigationStage =
   | 'NORMALIZING'
-  | 'CLAIMS'
-  | 'SEARCH'
-  | 'SOURCES'
+  | 'EXTRACTING_CONTENT'
+  | 'EXTRACTING_CLAIMS'
+  | 'SEARCHING'
+  | 'READING_SOURCES'
+  | 'ANALYZING_EVIDENCE'
+  | 'CALCULATING_TRUST'
   | 'COMPLETE'
 
 /** Input types */
@@ -62,12 +65,21 @@ export type RiskLevel = 'low' | 'medium' | 'high'
 
 /* ─── DATA MODELS ────────────────────────────────────────────────────────── */
 
+/** Deterministic claim verification status (backend spec 23) */
+export type ClaimVerificationStatus =
+  | 'pending'
+  | 'supported'
+  | 'contradicted'
+  | 'conflicting'
+  | 'insufficient'
+  | 'unsupported'
+
 export interface Claim {
   id: string
   text: string
   type: string
   importance: 'critical' | 'important' | 'supporting'
-  status?: string
+  status?: ClaimVerificationStatus
   reasoningSummary?: string
   createdAt?: string
 }
@@ -87,7 +99,7 @@ export interface Source {
   retrievedAt: string
   createdAt?: string
   authorityLevel?: SourceTier
-  accessStatus?: 'ok' | 'blocked' | 'timeout' | 'not_found'
+  accessStatus?: 'available' | 'restricted' | 'unavailable' | 'error' | 'ok' | 'blocked' | 'timeout' | 'not_found'
 }
 
 export interface Evidence {
@@ -96,9 +108,23 @@ export interface Evidence {
   sourceId: string
   excerpt: string
   relation: EvidenceRelation
+  /** Model's stated reason for the relation (inert text, excerpt is what matters) */
+  reason?: string | null
+  confidence?: 'high' | 'medium' | 'low' | null
   exactLocation?: string
-  retrievedAt: string
-  verificationStatus: 'verified' | 'pending' | 'rejected'
+  retrievedAt?: string
+  createdAt?: string
+  verificationStatus: 'verified' | 'pending' | 'rejected' | 'approved' | 'uncertain'
+}
+
+/** The deterministic Trust Engine decision (backend spec 26-30) */
+export interface TrustDecision {
+  verdict: Verdict
+  trustScore: number
+  explanation: string | null
+  recommendedAction: string[]
+  reasons: string[]
+  createdAt: string
 }
 
 export interface Investigation {
@@ -112,14 +138,149 @@ export interface Investigation {
   verdict?: Verdict
   trustScore?: number
   searchQuery?: string | null
+  searchQueries?: string[]
   selectedClaimId?: string | null
   errorMessage?: string | null
+  /** URL fetch signals (backend spec 08/11) — a signal, never automatically malicious */
+  originalUrl?: string | null
+  finalUrl?: string | null
+  originalDomain?: string | null
+  finalDomain?: string | null
+  domainChanged?: boolean
+  contentTruncated?: boolean
   claims: Claim[]
   sources: Source[]
   evidence: Evidence[]
+  /** Persisted Trust Engine decision — null while the investigation runs */
+  decision?: TrustDecision | null
   events?: InvestigationEvent[]
+  /** Optional question the user attached — never merged into inputText */
+  investigationQuestion?: string | null
+  /** Derived read-time from persisted rows — null until the run completes */
+  studentIntelligence?: StudentIntelligence | null
   createdAt: string
   updatedAt: string
+}
+
+/* ─── STUDENT INTELLIGENCE ─────────────────────────────────────────────────
+ * Mirrors the backend derivation (services/studentIntelligenceService.ts).
+ * Every value here is computed deterministically from data the investigation
+ * already stored — no model output is repackaged as a decision.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+export type InvestigationIntent =
+  | 'ELIGIBILITY'
+  | 'CURRENTNESS'
+  | 'DEADLINE'
+  | 'LEGITIMACY'
+  | 'GENERAL'
+
+export type RequirementKind =
+  | 'country'
+  | 'age'
+  | 'education'
+  | 'field'
+  | 'gpa'
+  | 'skills'
+  | 'experience'
+  | 'language'
+  | 'deadline'
+
+export type RequirementOutcome = 'MATCHED' | 'MISSING' | 'UNKNOWN'
+
+export interface RequirementCheck {
+  kind: RequirementKind
+  /** The real claim text the requirement was read from */
+  source: string
+  outcome: RequirementOutcome
+  /** What was actually compared against the profile */
+  detail: string
+  hard: boolean
+}
+
+export type EligibilityResult =
+  | 'ELIGIBLE'
+  | 'PARTIALLY_ELIGIBLE'
+  | 'NOT_ELIGIBLE'
+  | 'INSUFFICIENT_DATA'
+
+/** Distinct from the legacy per-field StudentMatchResult demo type. */
+export interface EligibilityMatch {
+  result: EligibilityResult
+  /** 0–100, or null when nothing could be checked */
+  matchScore: number | null
+  matched: RequirementCheck[]
+  missing: RequirementCheck[]
+  unknown: RequirementCheck[]
+  explanation: string
+}
+
+export type DeadlineState = 'ACTIVE' | 'EXPIRED' | 'CONFLICTING' | 'UNKNOWN'
+
+export interface DeadlineDate {
+  claimId: string
+  iso: string
+}
+
+export interface DeadlineAssessment {
+  state: DeadlineState
+  dates: DeadlineDate[]
+  detail: string
+}
+
+export type OpportunityCurrencyState =
+  | 'CURRENT'
+  | 'EXPIRED'
+  | 'POSSIBLY_OUTDATED'
+  | 'UNKNOWN'
+
+export interface OpportunityCurrency {
+  state: OpportunityCurrencyState
+  detail: string
+}
+
+export type SourceCurrentnessStatus = 'recent' | 'dated' | 'unknown'
+
+export interface SourceCurrentness {
+  sourceId: string
+  status: SourceCurrentnessStatus
+  publishedAt: string | null
+  retrievedAt: string
+  ageDays: number | null
+}
+
+export interface InvestigationCurrentness {
+  overall: 'recent' | 'dated' | 'mixed' | 'unknown'
+  perSource: SourceCurrentness[]
+}
+
+export interface RecommendedSource {
+  sourceId: string
+  url: string
+  title: string
+  domain: string
+  sourceType: string
+  tier: 'authoritative' | 'primary' | 'independent'
+  why: string
+  supportingExcerpts: number
+  contradictingExcerpts: number
+  strongestConfidence: 'high' | 'medium' | 'low' | null
+  contentAvailable: boolean
+}
+
+export interface StudentIntelligence {
+  question: string | null
+  intent: InvestigationIntent | null
+  answer: string[]
+  currentness: {
+    opportunity: OpportunityCurrency
+    deadline: DeadlineAssessment
+    sources: InvestigationCurrentness
+  }
+  /** Null for non-students — the comparison needs a real student profile */
+  studentMatch: EligibilityMatch | null
+  recommendedSource: RecommendedSource | null
+  recommendedActions: string[]
 }
 
 /** Internal investigation event types (derived from persisted rows) */
@@ -127,6 +288,7 @@ export type InvestigationEventType =
   | 'STAGE_CHANGED'
   | 'CLAIM_CREATED'
   | 'SOURCE_DISCOVERED'
+  | 'EVIDENCE_FOUND'
   | 'INVESTIGATION_COMPLETED'
   | 'INVESTIGATION_FAILED'
 

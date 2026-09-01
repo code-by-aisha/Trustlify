@@ -14,6 +14,10 @@ import {
   classifySourceType,
   normalizeSearchSources,
   normalizedSourceSchema,
+  canonicalUrlKey,
+  dedupeSources,
+  selectSourcesForFetch,
+  type NormalizedSource,
 } from "../investigation/sourceNormalizer.js";
 
 const NOW = new Date("2026-08-30T10:00:00.000Z");
@@ -152,5 +156,185 @@ describe("category 14 — source classification fallback to UNKNOWN", () => {
     // 'gov' as part of a word, not a domain segment
     expect(classifySourceType("https://govrelations.example.com/")).toBe("unknown");
     expect(classifySourceType("https://scholarship-guides.edu.example.com/")).toBe("unknown");
+  });
+});
+
+/* ─── Dedupe (spec 16/18) ───────────────────────────────────────────────── */
+
+function src(
+  url: string,
+  overrides: Partial<NormalizedSource> = {},
+): NormalizedSource {
+  let domain = url;
+  try {
+    domain = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    /* keep raw */
+  }
+  return {
+    title: "Page",
+    url,
+    domain,
+    snippet: "A snippet.",
+    sourceType: "unknown",
+    retrievedAt: NOW.toISOString(),
+    ...overrides,
+  };
+}
+
+describe("canonicalUrlKey", () => {
+  it("treats scheme, www, and trailing slash as equivalent", () => {
+    expect(canonicalUrlKey("https://example.com/a")).toBe("example.com/a");
+    expect(canonicalUrlKey("http://www.example.com/a")).toBe("example.com/a");
+    expect(canonicalUrlKey("https://example.com/a/")).toBe("example.com/a");
+    expect(canonicalUrlKey("https://EXAMPLE.com/a")).toBe("example.com/a");
+  });
+
+  it("ignores hash fragments but keeps distinct query strings", () => {
+    expect(canonicalUrlKey("https://example.com/a#section")).toBe(
+      canonicalUrlKey("https://example.com/a"),
+    );
+    expect(canonicalUrlKey("https://example.com/a?x=1")).not.toBe(
+      canonicalUrlKey("https://example.com/a?x=2"),
+    );
+  });
+
+  it("falls back to the lowercased raw string for unparseable input", () => {
+    expect(canonicalUrlKey("Not A URL")).toBe("not a url");
+  });
+});
+
+describe("dedupeSources", () => {
+  it("collapses equivalent URLs to the first occurrence", () => {
+    const sources = [
+      src("https://example.com/a", { title: "First" }),
+      src("http://www.example.com/a/#top", { title: "Duplicate" }),
+      src("https://example.com/a/", { title: "Also duplicate" }),
+    ];
+
+    const deduped = dedupeSources(sources);
+
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0].title).toBe("First");
+  });
+
+  it("keeps genuinely distinct URLs in their original order", () => {
+    const sources = [
+      src("https://b.example.org/x"),
+      src("https://a.example.org/y"),
+      src("https://c.example.org/z"),
+    ];
+
+    expect(dedupeSources(sources).map((s) => s.url)).toEqual([
+      "https://b.example.org/x",
+      "https://a.example.org/y",
+      "https://c.example.org/z",
+    ]);
+  });
+
+  it("returns an empty list unchanged", () => {
+    expect(dedupeSources([])).toEqual([]);
+  });
+});
+
+/* ─── Selection for content fetching (spec 18/19) ────────────────────────── */
+
+describe("selectSourcesForFetch", () => {
+  it("returns nothing when there is nothing to select", () => {
+    expect(selectSourcesForFetch([], 3)).toEqual([]);
+  });
+
+  it("prefers authoritative sources over longer snippets", () => {
+    const blog = src("https://blog.example.org/long", {
+      snippet: "S".repeat(600),
+    });
+    const gov = src("https://hec.gov.pk/scholarships", {
+      sourceType: "government",
+      snippet: "Short.",
+    });
+
+    const selected = selectSourcesForFetch([blog, gov], 1);
+
+    expect(selected).toHaveLength(1);
+    expect(selected[0].url).toBe("https://hec.gov.pk/scholarships");
+  });
+
+  it("penalizes social sources below ordinary pages", () => {
+    const social = src("https://facebook.com/groups/scholarships", {
+      sourceType: "social",
+      snippet: "S".repeat(600),
+    });
+    const blog = src("https://blog.example.org/post", { snippet: "tiny" });
+
+    const selected = selectSourcesForFetch([social, blog], 1);
+
+    expect(selected[0].url).toBe("https://blog.example.org/post");
+  });
+
+  it("breaks ties with snippet length, then original order", () => {
+    const short = src("https://one.example.org/a", { snippet: "x" });
+    const long = src("https://two.example.org/b", { snippet: "y".repeat(400) });
+
+    expect(selectSourcesForFetch([short, long], 1)[0].url).toBe(
+      "https://two.example.org/b",
+    );
+    // Same length → original order wins
+    const same = [
+      src("https://first.example.org/a", { snippet: "12345" }),
+      src("https://second.example.org/b", { snippet: "12345" }),
+    ];
+    expect(selectSourcesForFetch(same, 1)[0].url).toBe("https://first.example.org/a");
+  });
+
+  it("caps the selection at maxFetches", () => {
+    const sources = [
+      src("https://one.example.org/a"),
+      src("https://two.example.org/b"),
+      src("https://three.example.org/c"),
+      src("https://four.example.org/d"),
+      src("https://five.example.org/e"),
+    ];
+
+    expect(selectSourcesForFetch(sources, 3)).toHaveLength(3);
+    expect(selectSourcesForFetch(sources, 1)).toHaveLength(1);
+  });
+
+  it("spreads selection across distinct domains while unexplored domains remain", () => {
+    const govA = src("https://hec.gov.pk/a", { sourceType: "government" });
+    const govB = src("https://hec.gov.pk/b", { sourceType: "government" });
+    const blog = src("https://example.org/c");
+
+    const selected = selectSourcesForFetch([govA, govB, blog], 2);
+
+    // The second hec.gov.pk page is skipped in favour of the unexplored domain
+    expect(selected.map((s) => s.url)).toEqual([
+      "https://hec.gov.pk/a",
+      "https://example.org/c",
+    ]);
+  });
+
+  it("allows duplicate domains once no unexplored domain remains", () => {
+    const govA = src("https://hec.gov.pk/a", { sourceType: "government" });
+    const govB = src("https://hec.gov.pk/b", { sourceType: "government" });
+
+    expect(selectSourcesForFetch([govA, govB], 2).map((s) => s.url)).toEqual([
+      "https://hec.gov.pk/a",
+      "https://hec.gov.pk/b",
+    ]);
+  });
+
+  it("returns the selection in stable original search order", () => {
+    const blog1 = src("https://blog-one.example.org/a");
+    const gov = src("https://hec.gov.pk/official", { sourceType: "government" });
+    const blog2 = src("https://blog-two.example.org/b");
+
+    const selected = selectSourcesForFetch([blog1, gov, blog2], 2);
+
+    // gov wins a slot on score, blog1 the other — but the output keeps the
+    // original ranking order (blog1 appeared before gov in the results)
+    expect(selected.map((s) => s.url)).toEqual([
+      "https://blog-one.example.org/a",
+      "https://hec.gov.pk/official",
+    ]);
   });
 });

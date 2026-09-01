@@ -3,8 +3,9 @@
  * Polls the backend for REAL investigation state — the backend is the single
  * source of truth. No timers, no simulated progress, no fake stages.
  *
- * Backend contract (Phase 3C):
- *   GET /api/investigations/:id → { status, currentStage, claims, sources, events, ... }
+ * Backend contract (Phase 4):
+ *   GET /api/investigations/:id → { status, currentStage, claims, sources,
+ *   evidence, decision, events, ... }
  *
  * Polling continues while status is 'created' or 'processing' and stops on
  * 'complete' / 'failed'. Polling NEVER triggers AI or search calls — only the
@@ -15,7 +16,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { apiFetch } from '@/lib/supabase'
 import type { Investigation, InvestigationStage } from '@/types'
 
-/* ─── Stage definitions (mirrors the backend mini pipeline) ────────────────── */
+/* ─── Stage definitions (mirrors the backend pipeline, spec 32) ────────────── */
 
 export interface StageMeta {
   id: InvestigationStage
@@ -24,20 +25,37 @@ export interface StageMeta {
 }
 
 export const INVESTIGATION_STAGES: StageMeta[] = [
-  { id: 'NORMALIZING', label: 'Reading input',        desc: 'Validating and normalizing the submitted content' },
-  { id: 'CLAIMS',      label: 'Extracting claims',     desc: 'AI extracts discrete factual claims' },
-  { id: 'SEARCH',      label: 'Finding sources',       desc: 'One targeted web search built from the priority claim' },
-  { id: 'SOURCES',     label: 'Recording sources',     desc: 'Normalizing and storing discovered sources' },
-  { id: 'COMPLETE',    label: 'Investigation complete', desc: 'Claims and sources recorded — verification arrives in a later phase' },
+  { id: 'NORMALIZING',        label: 'Reading input',         desc: 'Validating and normalizing the submitted content' },
+  { id: 'EXTRACTING_CONTENT', label: 'Extracting content',    desc: 'Fetching the actual page or file content — never claims from a URL string' },
+  { id: 'EXTRACTING_CLAIMS',  label: 'Extracting claims',     desc: 'AI extracts discrete factual claims from the content' },
+  { id: 'SEARCHING',          label: 'Finding sources',       desc: 'Up to three targeted web searches built from the priority claims' },
+  { id: 'READING_SOURCES',    label: 'Reading sources',       desc: 'Fetching full content from the most relevant discovered sources' },
+  { id: 'ANALYZING_EVIDENCE', label: 'Analyzing evidence',    desc: 'AI compares claims against source content — every excerpt is verified' },
+  { id: 'CALCULATING_TRUST',  label: 'Calculating trust',     desc: 'The deterministic Trust Engine computes verdict, score, and reasons — never the AI' },
+  { id: 'COMPLETE',           label: 'Investigation complete', desc: 'Verdict, trust score, and reasons are ready' },
 ]
 
 /**
- * Map a backend stage string to its index in INVESTIGATION_STAGES.
+ * Stages that apply to a given input. Text input has no content-extraction
+ * stage — the backend pipeline skips it, so the progress UI does too.
+ */
+export function stagesForInput(inputType: string | null | undefined): StageMeta[] {
+  if (inputType === 'text') {
+    return INVESTIGATION_STAGES.filter((s) => s.id !== 'EXTRACTING_CONTENT')
+  }
+  return INVESTIGATION_STAGES
+}
+
+/**
+ * Map a backend stage string to its index in the stage list.
  * Unknown/legacy values map to 0 (NORMALIZING) so the UI never crashes on
  * unexpected data — the backend remains authoritative.
  */
-export function stageIndexOf(stage: string | null | undefined): number {
-  const index = INVESTIGATION_STAGES.findIndex((s) => s.id === stage)
+export function stageIndexOf(
+  stage: string | null | undefined,
+  stages: StageMeta[] = INVESTIGATION_STAGES,
+): number {
+  const index = stages.findIndex((s) => s.id === stage)
   return index >= 0 ? index : 0
 }
 
