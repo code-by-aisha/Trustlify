@@ -41,11 +41,17 @@ import {
   recommendSource,
   type RecommendedSource,
 } from "../engines/recommendationEngine.js";
+import { buildDiscoveryQueries, MAX_SEARCHES } from "./similarOpportunityService.js";
+import type { PublicProfileEvidence } from "./profileEvidenceService.js";
 
 export interface IntelligenceClaim {
   id: string;
   text: string;
   type: string;
+  /** 'supported' | 'contradicted' | 'conflicting' | 'insufficient' | 'pending'. */
+  status?: string | null;
+  /** 'critical' | 'important' | 'supporting' — used to pick what to summarise. */
+  importance?: string | null;
 }
 
 export interface IntelligenceSource {
@@ -83,8 +89,63 @@ export interface DeriveStudentIntelligenceInput {
   submittedDomain?: string | null;
   /** Persisted profile, or null for general users / missing profile. */
   profile: StudentProfileFacts | null;
+  /**
+   * Facts already read from the student's own PUBLIC portfolio page, when they
+   * gave one. Supplied by the caller so this module stays pure (update spec
+   * 04/05) — it is supplementary evidence and never replaces `profile`.
+   */
+  publicProfile?: PublicProfileEvidence | null;
   /** Injectable clock so tests stay deterministic. */
   now?: Date;
+}
+
+/* ─── Question-aware presentation order (update spec 08) ──────────────────── */
+
+/**
+ * The interpretation blocks of the result page. The raw-evidence appendix
+ * (claims, evidence, sources) always stays below them — a question changes
+ * which answer comes first, never what the investigation found.
+ */
+export type IntelligenceSectionKey =
+  | "currentness"
+  | "match"
+  | "recommendedSource"
+  | "verdictReasons"
+  | "actions";
+
+/** The order this page used before questions existed — the safe default. */
+export const DEFAULT_SECTION_ORDER: IntelligenceSectionKey[] = [
+  "currentness",
+  "match",
+  "recommendedSource",
+  "verdictReasons",
+  "actions",
+];
+
+/**
+ * Primary intent → what the student asked about first. Deterministic: the same
+ * question always produces the same order, and no block is ever dropped.
+ */
+const SECTION_PRIORITY: Record<InvestigationIntent, IntelligenceSectionKey[]> = {
+  ELIGIBILITY: ["match", "currentness", "recommendedSource", "verdictReasons", "actions"],
+  DEADLINE: ["currentness", "recommendedSource", "verdictReasons", "actions", "match"],
+  CURRENTNESS: ["currentness", "recommendedSource", "verdictReasons", "actions", "match"],
+  LEGITIMACY: ["verdictReasons", "recommendedSource", "currentness", "actions", "match"],
+  EXPLANATION: ["verdictReasons", "recommendedSource", "currentness", "match", "actions"],
+  SIMILAR_OPPORTUNITIES: ["match", "recommendedSource", "currentness", "verdictReasons", "actions"],
+  GENERAL: DEFAULT_SECTION_ORDER,
+};
+
+export function sectionOrderFor(
+  intent: InvestigationIntent | null,
+): IntelligenceSectionKey[] {
+  const preferred = intent ? SECTION_PRIORITY[intent] : null;
+  if (!preferred) return DEFAULT_SECTION_ORDER;
+  // Completeness guard: every block still appears, in the requested order.
+  return [
+    ...new Set(preferred),
+    ...DEFAULT_SECTION_ORDER.filter((key) => !preferred.includes(key)),
+  ];
 }
 
 export interface StudentIntelligence {
@@ -93,6 +154,8 @@ export interface StudentIntelligence {
   intent: InvestigationIntent | null;
   /** Answer lines built ONLY from the real outputs of this investigation. */
   answer: string[];
+  /** Presentation order of the interpretation blocks, driven by `intent`. */
+  emphasis: IntelligenceSectionKey[];
   currentness: {
     opportunity: OpportunityCurrency;
     deadline: DeadlineAssessment;
@@ -102,10 +165,27 @@ export interface StudentIntelligence {
   studentMatch: StudentMatchResult | null;
   recommendedSource: RecommendedSource | null;
   recommendedActions: string[];
+  /** Echoed so the page can state what portfolio evidence was used. */
+  publicProfile: PublicProfileEvidence | null;
 }
 
 function isStudent(profile: StudentProfileFacts | null): boolean {
   return String(profile?.role ?? "").toLowerCase() === "student";
+}
+
+function quote(text: string, max: number): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max)}…` : collapsed;
+}
+
+/**
+ * More than one distinct deadline in the content is a conflict, not a detail to
+ * average away — it is stated as a conflict whenever it exists (spec 08).
+ */
+function dateConflictLine(deadline: DeadlineAssessment): string | null {
+  const iso = [...new Set(deadline.dates.map((entry) => entry.iso))];
+  if (iso.length < 2) return null;
+  return `The content states ${iso.length} different dates (${iso.join(", ")}) — Trustlify reports the conflict instead of picking one, so confirm the closing date on the source itself.`;
 }
 
 /**
@@ -121,8 +201,19 @@ function buildAnswer(args: {
   deadline: DeadlineAssessment;
   decision: IntelligenceDecision | null;
   recommendedSource: RecommendedSource | null;
+  claims: IntelligenceClaim[];
+  discoveryQueries: string[];
 }): string[] {
-  const { intent, match, opportunity, deadline, decision, recommendedSource } = args;
+  const {
+    intent,
+    match,
+    opportunity,
+    deadline,
+    decision,
+    recommendedSource,
+    claims,
+    discoveryQueries,
+  } = args;
   const lines: string[] = [];
 
   switch (intent) {
@@ -150,6 +241,8 @@ function buildAnswer(args: {
 
     case "DEADLINE": {
       lines.push(deadline.detail);
+      const conflict = dateConflictLine(deadline);
+      if (conflict) lines.push(conflict);
       if (deadline.state === "ACTIVE" && match) {
         lines.push(
           `Deadline is open, but your eligibility is ${match.result.replace(/_/g, " ").toLowerCase()} — check the STUDENT MATCH section before applying.`,
@@ -160,6 +253,8 @@ function buildAnswer(args: {
 
     case "CURRENTNESS": {
       lines.push(opportunity.detail);
+      const conflict = dateConflictLine(deadline);
+      if (conflict) lines.push(conflict);
       break;
     }
 
@@ -174,6 +269,65 @@ function buildAnswer(args: {
           "No verdict was recorded for this investigation, so Trustlify cannot say whether it is legitimate.",
         );
       }
+      break;
+    }
+
+    case "EXPLANATION": {
+      // Concise summary of what was actually confirmed, then the caveats —
+      // both read straight out of the persisted claim statuses.
+      const supported = claims.filter((claim) => claim.status === "supported");
+      const important = supported.filter((claim) => claim.importance !== "supporting");
+      const facts = (important.length > 0 ? important : supported).slice(0, 3);
+
+      if (facts.length > 0) {
+        lines.push(
+          `What the collected evidence confirms: ${facts
+            .map((claim) => `“${quote(claim.text, 150)}”`)
+            .join(" ")}`,
+        );
+      } else {
+        lines.push(
+          "Nothing in this content was confirmed by the collected evidence, so there is no verified fact to summarise — that absence is itself the answer.",
+        );
+      }
+
+      const shaky = claims.filter((claim) => claim.status !== "supported");
+      const conflicting = claims.filter(
+        (claim) => claim.status === "contradicted" || claim.status === "conflicting",
+      );
+      if (shaky.length > 0) {
+        lines.push(
+          `Caveat: ${shaky.length} of ${claims.length} claims stayed unconfirmed${
+            conflicting.length > 0 ? `, and ${conflicting.length} of them conflict with other evidence` : ""
+          } — the VERIFIED EVIDENCE section below shows the exact excerpt behind each one.`,
+        );
+      }
+      if (decision) {
+        lines.push(
+          `The verdict computed from that evidence is ${decision.verdict} (trust score ${decision.trustScore}/100) — calculated by code, not by the AI.`,
+        );
+      }
+      break;
+    }
+
+    case "SIMILAR_OPPORTUNITIES": {
+      // Discovery costs a search and is never run while reading a result, so the
+      // answer says what WILL happen and on which deterministic terms.
+      lines.push(
+        `Trustlify will not invent alternatives. Use FIND SIMILAR OPPORTUNITIES below and it will run at most ${MAX_SEARCHES} searches through the same search provider this investigation already uses.`,
+      );
+      if (discoveryQueries.length > 0) {
+        lines.push(
+          `The queries are built by code from your own profile and this content, not by a model: ${discoveryQueries
+            .map((query) => `“${query}”`)
+            .join(" · ")}`,
+        );
+      }
+      lines.push(
+        match
+          ? `Each candidate is compared with the same deterministic matcher that produced your result here (${match.result.replace(/_/g, " ").toLowerCase()}) — a match shown below is only stated when its own text supports it.`
+          : "Each candidate is compared with the same deterministic matcher, which needs a saved student profile — without one, alternatives are listed but never claimed to fit you.",
+      );
       break;
     }
 
@@ -263,9 +417,23 @@ export function deriveStudentIntelligence(
     recommendedSource: recommended,
   });
 
+  /* ── Similar-opportunity query preview (no search runs here) ───────────── */
+  const discoveryQueries =
+    intent === "SIMILAR_OPPORTUNITIES" && isStudent(input.profile)
+      ? buildDiscoveryQueries({
+          profile: input.profile as StudentProfileFacts,
+          claims,
+          submittedUrl: null,
+          submittedDomain: input.submittedDomain ?? null,
+          now,
+        }).queries
+      : [];
+
   return {
     question,
     intent,
+    emphasis: sectionOrderFor(intent),
+    publicProfile: input.publicProfile ?? null,
     answer:
       question && intent
         ? buildAnswer({
@@ -276,6 +444,8 @@ export function deriveStudentIntelligence(
             deadline,
             decision: input.decision,
             recommendedSource: recommended,
+            claims: input.claims,
+            discoveryQueries,
           })
         : [],
     currentness: { opportunity, deadline, sources: sourceCurrentness },

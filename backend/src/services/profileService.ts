@@ -6,6 +6,7 @@
 
 import { supabaseAdmin } from "../config/supabase.js";
 import { AppError } from "../middleware/errorHandler.js";
+import { levelFromEducationText } from "../profile/educationLevels.js";
 import type { CreateProfileInput } from "../validators/profile.js";
 
 interface ProfileRow {
@@ -14,8 +15,11 @@ interface ProfileRow {
   role: string;
   display_name: string | null;
   education: string | null;
+  education_level: string | null;
   age: number | null;
   location: string | null;
+  country: string | null;
+  field_of_study: string | null;
   skills: string[];
   interests: string[];
   experience: string | null;
@@ -37,8 +41,11 @@ function mapProfileRow(row: ProfileRow) {
     role: row.role,
     displayName: row.display_name,
     education: row.education,
+    educationLevel: row.education_level,
     age: row.age,
     location: row.location,
+    country: row.country,
+    fieldOfStudy: row.field_of_study,
     skills: row.skills ?? [],
     interests: row.interests ?? [],
     experience: row.experience,
@@ -67,8 +74,14 @@ export async function createProfile(
         display_name: input.displayName ?? null,
         role: input.role ?? "general",
         education: input.education ?? null,
+        // An explicit structured level always wins; otherwise read one from the
+        // qualification text so old forms keep populating the new field.
+        education_level:
+          input.educationLevel ?? levelFromEducationText(input.education ?? null),
         age: input.age ?? null,
         location: input.location ?? null,
+        country: input.country ?? null,
+        field_of_study: input.fieldOfStudy ?? null,
         skills: input.skills ?? [],
         interests: input.interests ?? [],
         experience: input.experience ?? null,
@@ -118,8 +131,11 @@ export async function updateProfile(
   const dbFields: Record<string, unknown> = {};
   if (input.displayName !== undefined) dbFields.display_name = input.displayName;
   if (input.education !== undefined) dbFields.education = input.education;
+  if (input.educationLevel !== undefined) dbFields.education_level = input.educationLevel;
   if (input.age !== undefined) dbFields.age = input.age;
   if (input.location !== undefined) dbFields.location = input.location;
+  if (input.country !== undefined) dbFields.country = input.country;
+  if (input.fieldOfStudy !== undefined) dbFields.field_of_study = input.fieldOfStudy;
   if (input.skills !== undefined) dbFields.skills = input.skills;
   if (input.interests !== undefined) dbFields.interests = input.interests;
   if (input.experience !== undefined) dbFields.experience = input.experience;
@@ -128,6 +144,18 @@ export async function updateProfile(
   if (input.timezone !== undefined) dbFields.timezone = input.timezone;
   if (input.notificationPreferences !== undefined) {
     dbFields.notification_preferences = input.notificationPreferences;
+  }
+
+  // The structured level must never disagree with the qualification text the
+  // student just edited. Only re-derived when the text changed and no explicit
+  // level was sent in the same request.
+  if (
+    input.education !== undefined &&
+    input.educationLevel === undefined
+  ) {
+    dbFields.education_level = levelFromEducationText(
+      typeof input.education === "string" ? input.education : null,
+    );
   }
 
   if (Object.keys(dbFields).length === 0) {

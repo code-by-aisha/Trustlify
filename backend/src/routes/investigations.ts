@@ -6,6 +6,7 @@
  * GET  /api/investigations/:id       — Get investigation state
  * POST /api/investigations/:id/recheck — Re-check investigation
  * POST /api/investigations/:id/monitor — Start monitoring
+ * POST /api/investigations/:id/similar — Similar opportunities (student, on request)
  */
 
 import { Router } from "express";
@@ -106,3 +107,27 @@ investigationsRouter.post("/:id/monitor", authenticateUser, async (req, res, nex
     next(error);
   }
 });
+
+// POST /api/investigations/:id/similar — Similar-opportunity discovery.
+// Deliberately a separate, user-triggered endpoint: reading a result never
+// searches, and this one is capped at MAX_SEARCHES provider calls. Rate limited
+// with the same limiter as investigations because it costs the same kind of call.
+investigationsRouter.post(
+  "/:id/similar",
+  authenticateUser,
+  investigationRateLimiter,
+  async (req, res, next) => {
+    try {
+      const user = requireAuthenticatedUser(req);
+      const { id } = idParamSchema.parse(req.params);
+      const result = await investigationService.getSimilarOpportunities(
+        id,
+        user.userId,
+        user.role,
+      );
+      res.json({ success: true, data: result, requestId: req.requestId });
+    } catch (error) {
+      next(error);
+    }
+  },
+);

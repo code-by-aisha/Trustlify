@@ -300,6 +300,8 @@ export default function Investigate() {
               className="w-full bg-transparent font-mono text-sm text-bone placeholder:text-dim focus:outline-none" />
             <p className="font-mono text-[10px] text-dim mt-1.5">
               Answered from the evidence this investigation collects — it never changes the verdict.
+              Eligibility, deadline, “is this still active”, “is this real”, “explain this” and “find
+              something similar” are recognised by keyword rules, not by a model call.
             </p>
           </div>
 

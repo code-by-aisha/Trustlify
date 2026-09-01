@@ -21,6 +21,12 @@
  */
 
 import type { DeadlineAssessment, DeadlineState } from "./currentnessEngine.js";
+import {
+  isEducationLevel,
+  levelFromEducationText,
+  LEVEL_LADDER,
+  LEVEL_LABEL,
+} from "../profile/educationLevels.js";
 
 /* ─── Public model ────────────────────────────────────────────────────────── */
 
@@ -72,6 +78,16 @@ export interface StudentMatchResult {
 export interface StudentProfileFacts {
   role?: string | null;
   education?: string | null;
+  /**
+   * Structured country, added with the profile-structure update. When present
+   * it is authoritative for the country check; `location` (a city/region free
+   * text) is the fallback, exactly as before.
+   */
+  country?: string | null;
+  /** Bounded education ladder value — refines, never replaces, `education`. */
+  educationLevel?: string | null;
+  /** Discipline the student studies, e.g. "Computer Science". */
+  fieldOfStudy?: string | null;
   age?: number | null;
   location?: string | null;
   skills?: string[] | null;
@@ -79,6 +95,14 @@ export interface StudentProfileFacts {
   experience?: string | null;
   portfolioUrl?: string | null;
   language?: string | null;
+  /**
+   * Skills read from the student's own PUBLIC portfolio page (update spec
+   * 04/05). Supplementary evidence only: it can raise a skill check to MATCHED
+   * with an explicit attribution, and it never rewrites the saved profile.
+   */
+  publicProfileSkills?: string[] | null;
+  /** Domain the public skills came from, shown so the source is never vague. */
+  publicProfileDomain?: string | null;
 }
 
 export interface RequirementClaim {
@@ -203,8 +227,9 @@ const DISCIPLINES: Record<string, string[]> = {
   stem: ["stem"],
 };
 
-/** Concrete skills opportunities ask for. No single-letter entries. */
-const SKILLS: string[] = [
+/** Concrete skills opportunities ask for. No single-letter entries.
+ * Exported so the public-portfolio scan recognises the same vocabulary. */
+export const SKILLS: string[] = [
   "python", "java", "javascript", "typescript", "react", "node", "sql", "excel",
   "power bi", "tableau", "machine learning", "deep learning", "data analysis",
   "web development", "mobile development", "cybersecurity", "networking", "linux",
@@ -262,7 +287,7 @@ function truncate(text: string, max: number): string {
 }
 
 /** "Open to Pakistani students" → "open_to_pakistani_students" */
-function normalizeLookup(text: string): string {
+export function normalizeLookup(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
@@ -270,7 +295,7 @@ function normalizeLookup(text: string): string {
 }
 
 /** True when `needle` appears in the normalized `haystack` as a whole token(s). */
-function mentionsToken(haystack: string, needle: string): boolean {
+export function mentionsToken(haystack: string, needle: string): boolean {
   const key = normalizeLookup(needle);
   if (!key) return false;
   const padded = `_${haystack}_`;
@@ -434,20 +459,25 @@ function checkCountry(claim: string, profile: StudentProfileFacts): RequirementC
     source: truncate(claim, 160),
     hard: EXCLUSIVE_COUNTRY.test(claim),
   };
-  const profileCountry = profile.location
-    ? countriesMentioned(profile.location)[0] ?? null
-    : null;
 
-  if (!profile.location?.trim()) {
-    return { ...base, outcome: "UNKNOWN", detail: `The opportunity mentions ${requirementLabel}, but your profile has no location recorded.` };
+  // Structured country first, then the older free-text location — the same
+  // vocabulary is used for both so an unparsable value is never guessed.
+  const statedCountry = (profile.country ?? "").trim();
+  const locationText = (profile.location ?? "").trim();
+  const fieldLabel = statedCountry ? "profile country" : "profile location";
+  const rawValue = statedCountry || locationText;
+  const profileCountry = rawValue ? countriesMentioned(rawValue)[0] ?? null : null;
+
+  if (!rawValue) {
+    return { ...base, outcome: "UNKNOWN", detail: `The opportunity mentions ${requirementLabel}, but your profile has no country or location recorded.` };
   }
   if (!profileCountry) {
-    return { ...base, outcome: "UNKNOWN", detail: `The opportunity mentions ${requirementLabel}; your profile location "${truncate(profile.location, 60)}" does not name a country, so it cannot be compared.` };
+    return { ...base, outcome: "UNKNOWN", detail: `The opportunity mentions ${requirementLabel}; your ${fieldLabel} "${truncate(rawValue, 60)}" does not name a country, so it cannot be compared.` };
   }
   if (required.includes(profileCountry)) {
-    return { ...base, outcome: "MATCHED", detail: `Your location: ${profileCountry} — named in the requirement (${requirementLabel}).` };
+    return { ...base, outcome: "MATCHED", detail: `Your ${fieldLabel}: ${profileCountry} — named in the requirement (${requirementLabel}).` };
   }
-  return { ...base, outcome: "MISSING", detail: `The requirement names ${requirementLabel}; your profile location is ${profileCountry}.` };
+  return { ...base, outcome: "MISSING", detail: `The requirement names ${requirementLabel}; your ${fieldLabel} is ${profileCountry}.` };
 }
 
 function checkAge(claim: string, profile: StudentProfileFacts): RequirementCheck {
@@ -487,10 +517,49 @@ function checkAge(claim: string, profile: StudentProfileFacts): RequirementCheck
   return { ...base, outcome: "MATCHED", detail: `The opportunity asks for ${stated}; your profile age is ${profile.age}.` };
 }
 
+/**
+ * Ladder position of the student's qualification.
+ *
+ * The structured `education_level` and the free-text `education` are both read
+ * and the HIGHER one wins. That keeps every pre-structured profile behaving
+ * exactly as it did before, and stops a coarse value (POSTGRADUATE, which
+ * covers both Master's and PhD) from down-grading a profile that literally
+ * says "PhD".
+ */
+function profileEducationLadder(profile: StudentProfileFacts): number | null {
+  const positions: number[] = [];
+
+  const fromText = educationLevel(profile.education);
+  if (fromText !== null) positions.push(fromText);
+
+  const level = isEducationLevel(profile.educationLevel)
+    ? profile.educationLevel
+    : levelFromEducationText(profile.education);
+  const structured = level ? LEVEL_LADDER[level] : null;
+  if (structured !== null) positions.push(structured);
+
+  return positions.length > 0 ? Math.max(...positions) : null;
+}
+
+/** How the profile's own education is described inside an explanation. */
+function profileEducationLabel(profile: StudentProfileFacts): string {
+  const textLabel = truncate(profile.education?.trim() || "", 60);
+  const level = isEducationLevel(profile.educationLevel)
+    ? profile.educationLevel
+    : levelFromEducationText(profile.education);
+
+  if (!level) return textLabel || "(not recorded)";
+  // Name the structured level, and keep the student's own wording next to it.
+  const structuredLabel = truncate(LEVEL_LABEL[level], 60);
+  return textLabel && textLabel !== structuredLabel
+    ? `${structuredLabel} — "${textLabel}"`
+    : structuredLabel;
+}
+
 function checkEducation(claim: string, profile: StudentProfileFacts): RequirementCheck {
   const base = { kind: "education" as const, source: truncate(claim, 160), hard: true };
   const found = EDUCATION_KEYWORDS.filter((entry) => entry.pattern.test(claim));
-  const profileLabel = truncate(profile.education?.trim() || "(not recorded)", 60);
+  const profileLabel = profileEducationLabel(profile);
 
   if (found.length === 0) {
     return { ...base, outcome: "UNKNOWN", detail: "No recognisable education level could be read from the requirement." };
@@ -502,12 +571,12 @@ function checkEducation(claim: string, profile: StudentProfileFacts): Requiremen
   const requiredLabel =
     found.find((entry) => entry.level === requiredLevel)?.label ?? "degree-level";
 
-  const profileLevel = educationLevel(profile.education);
+  const profileLevel = profileEducationLadder(profile);
   if (profileLevel === null) {
     return { ...base, outcome: "UNKNOWN", detail: `The opportunity targets ${requiredLabel}-level applicants; your profile education "${profileLabel}" states no comparable qualification.` };
   }
   if (profileLevel < requiredLevel) {
-    return { ...base, outcome: "MISSING", detail: `The opportunity targets ${requiredLabel}-level applicants; your profile records ${profileLabel}.` };
+    return { ...base, outcome: "MISSING", detail: `Requirement: ${requiredLabel}-level. Your profile: ${profileLabel}. Education requirement not met.` };
   }
   if (ENROLMENT_PHRASE.test(claim)) {
     return { ...base, outcome: "UNKNOWN", detail: `The opportunity is aimed at currently-enrolled students; your profile records your highest qualification (${profileLabel}), not your enrolment status.` };
@@ -515,7 +584,8 @@ function checkEducation(claim: string, profile: StudentProfileFacts): Requiremen
   return { ...base, outcome: "MATCHED", detail: `The opportunity targets ${requiredLabel}-level applicants; your profile records ${profileLabel}.` };
 }
 
-function disciplinesIn(text: string): string[] {
+/** Disciplines named in a piece of text — shared with the portfolio scan. */
+export function disciplinesIn(text: string): string[] {
   const lookup = normalizeLookup(text);
   return Object.entries(DISCIPLINES)
     .filter(([name, aliases]) => mentionsAny(lookup, aliases) || mentionsToken(lookup, name))
@@ -530,7 +600,9 @@ function checkField(claim: string, profile: StudentProfileFacts): RequirementChe
     return { ...base, outcome: "UNKNOWN", detail: "No identifiable field of study in the requirement." };
   }
 
+  const statedField = (profile.fieldOfStudy ?? "").trim();
   const profileText = [
+    statedField,
     profile.education ?? "",
     (profile.skills ?? []).join(" "),
     (profile.interests ?? []).join(" "),
@@ -543,9 +615,13 @@ function checkField(claim: string, profile: StudentProfileFacts): RequirementChe
 
   const satisfied = disciplinesIn(profileText).filter((name) => required.includes(name));
   if (satisfied.length > 0) {
-    return { ...base, outcome: "MATCHED", detail: `The opportunity targets ${required.join(", ")}; your profile covers ${satisfied.join(", ")}.` };
+    const origin =
+      statedField && disciplinesIn(statedField).some((name) => satisfied.includes(name))
+        ? `your recorded field of study (${truncate(statedField, 60)})`
+        : "your profile";
+    return { ...base, outcome: "MATCHED", detail: `The opportunity targets ${required.join(", ")}; ${origin} covers ${satisfied.join(", ")}.` };
   }
-  return { ...base, outcome: "MISSING", detail: `The opportunity targets ${required.join(", ")}; nothing in your profile education, skills, interests, or experience names that field.` };
+  return { ...base, outcome: "MISSING", detail: `The opportunity targets ${required.join(", ")}; nothing in your profile education, field of study, skills, interests, or experience names that field.` };
 }
 
 function checkGpa(claim: string): RequirementCheck {
@@ -568,14 +644,29 @@ function checkSkills(claim: string, profile: StudentProfileFacts): RequirementCh
   }
 
   const profileSkills = (profile.skills ?? []).filter((skill) => skill.trim());
-  if (profileSkills.length === 0) {
-    return { ...base, outcome: "UNKNOWN", detail: `The requirement mentions ${required.join(", ")}; your profile has no skills recorded.` };
-  }
-
   const profileLookup = normalizeLookup(profileSkills.join(" "));
   const satisfied = required.filter((skill) => mentionsToken(profileLookup, skill));
   if (satisfied.length > 0) {
     return { ...base, outcome: "MATCHED", detail: `The requirement mentions ${required.join(", ")}; your profile lists ${satisfied.join(", ")}.` };
+  }
+
+  // Second look: the student's own public portfolio page. This is supplementary
+  // evidence, is always named as such in the detail, and never changes the
+  // saved profile (update spec 04/05).
+  const publicSkills = (profile.publicProfileSkills ?? []).filter((skill) => skill.trim());
+  const publicLookup = normalizeLookup(publicSkills.join(" "));
+  const fromPortfolio = required.filter((skill) => mentionsToken(publicLookup, skill));
+  if (fromPortfolio.length > 0) {
+    const domain = (profile.publicProfileDomain ?? "").trim();
+    return {
+      ...base,
+      outcome: "MATCHED",
+      detail: `The requirement mentions ${required.join(", ")}; your public portfolio${domain ? ` (${domain})` : ""} shows ${fromPortfolio.join(", ")}. Your saved profile does not list it — the comparison used the portfolio text, not an assumption.`,
+    };
+  }
+
+  if (profileSkills.length === 0) {
+    return { ...base, outcome: "UNKNOWN", detail: `The requirement mentions ${required.join(", ")}; your profile has no skills recorded.` };
   }
   return {
     ...base,

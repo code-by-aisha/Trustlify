@@ -95,6 +95,19 @@ describe("Auth middleware interface", () => {
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe("UNAUTHORIZED");
   });
+
+  it("keeps the similar-opportunity endpoint behind authentication", async () => {
+    // Discovery costs a search call, so it must never be reachable anonymously.
+    const anonymous = await request.post("/api/investigations/some-id/similar");
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.error.code).toBe("UNAUTHORIZED");
+
+    const badToken = await request
+      .post("/api/investigations/some-id/similar")
+      .set("Authorization", "Bearer fake-jwt-token");
+    expect(badToken.status).toBe(401);
+    expect(badToken.body.error.code).toBe("UNAUTHORIZED");
+  });
 });
 
 describe("Zod validation", () => {

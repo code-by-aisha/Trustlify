@@ -155,4 +155,95 @@ describe('useUserProfile', () => {
 
     expect(outcome.error).toBe('Profile could not be saved. Please try again.')
   })
+
+  it('hydrates the structured profile fields when the server returns them', async () => {
+    signInAsStudent()
+    vi.mocked(apiFetch).mockResolvedValue({
+      success: true,
+      data: {
+        ...STUDENT_ROW,
+        educationLevel: 'HIGH_SCHOOL',
+        country: 'Pakistan',
+        fieldOfStudy: 'Computer Science',
+      },
+    })
+
+    const { result } = renderHook(() => useUserProfile())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.profile.educationLevel).toBe('HIGH_SCHOOL')
+    expect(result.current.profile.country).toBe('Pakistan')
+    expect(result.current.profile.fieldOfStudy).toBe('Computer Science')
+    // The displayed free-text qualification is untouched by the new column.
+    expect(result.current.profile.education).toBe('Matric / O-Levels')
+  })
+
+  it('defaults a structured field to null, not undefined, on an older row', async () => {
+    signInAsStudent()
+    vi.mocked(apiFetch).mockResolvedValue({ success: true, data: STUDENT_ROW })
+
+    const { result } = renderHook(() => useUserProfile())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.profile.country).toBeNull()
+    expect(result.current.profile.educationLevel).toBeNull()
+    expect(result.current.profile.fieldOfStudy).toBeNull()
+  })
+
+  it('sends only the supplied fields through PATCH, including the new ones', async () => {
+    signInAsStudent()
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ success: true, data: STUDENT_ROW })
+      .mockResolvedValueOnce({
+        success: true,
+        data: {
+          ...STUDENT_ROW,
+          country: 'Pakistan',
+          fieldOfStudy: 'Computer Science',
+          educationLevel: 'HIGH_SCHOOL',
+        },
+      })
+
+    const { result } = renderHook(() => useUserProfile())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      await result.current.setProfile({
+        country: 'Pakistan',
+        fieldOfStudy: 'Computer Science',
+        educationLevel: 'HIGH_SCHOOL',
+      })
+    })
+
+    const [, init] = vi.mocked(apiFetch).mock.calls[1]
+    const body = JSON.parse(String(init?.body))
+    expect(body).toEqual({
+      country: 'Pakistan',
+      fieldOfStudy: 'Computer Science',
+      educationLevel: 'HIGH_SCHOOL',
+    })
+    expect(init?.method).toBe('PATCH')
+    expect(result.current.profile.country).toBe('Pakistan')
+    expect(result.current.profile.fieldOfStudy).toBe('Computer Science')
+  })
+
+  it('omits educationLevel when only the qualification text changed', async () => {
+    signInAsStudent()
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ success: true, data: STUDENT_ROW })
+      .mockResolvedValueOnce({ success: true, data: STUDENT_ROW })
+
+    const { result } = renderHook(() => useUserProfile())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(async () => {
+      await result.current.setProfile({ education: "BS / Bachelor's" })
+    })
+
+    const body = JSON.parse(String(vi.mocked(apiFetch).mock.calls[1][1]?.body))
+    // Sending no level lets the backend re-derive it from the text, so the two
+    // can never end up disagreeing.
+    expect(body).toEqual({ education: "BS / Bachelor's" })
+    expect(body).not.toHaveProperty('educationLevel')
+  })
 })

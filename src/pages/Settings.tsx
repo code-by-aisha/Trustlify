@@ -8,6 +8,21 @@ import { useAuth } from '@/hooks/useAuth'
 const sections = ['Profile', 'Language', 'Privacy', 'Notifications']
 const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5 } }
 
+/**
+ * The structured education levels the backend recognises (same enum as
+ * `profiles.education_level`). "" means "not picked" — the backend then reads a
+ * level from the qualification text, so the two fields can never disagree.
+ */
+const EDUCATION_LEVELS: { value: string; label: string }[] = [
+  { value: '', label: 'Auto — from my education text' },
+  { value: 'HIGH_SCHOOL', label: 'High school (Matric / O-Levels)' },
+  { value: 'COLLEGE', label: 'College (Intermediate / A-Levels)' },
+  { value: 'UNDERGRADUATE', label: "Undergraduate (Bachelor's level)" },
+  { value: 'GRADUATE', label: "Graduate (Bachelor's degree held)" },
+  { value: 'POSTGRADUATE', label: "Postgraduate (Master's / PhD)" },
+  { value: 'OTHER', label: 'Other / not classified' },
+]
+
 export default function Settings() {
   const [active, setActive] = useState('Profile')
   const { profile, setProfile, loadError: profileLoadError } = useUserProfile()
@@ -30,6 +45,7 @@ export default function Settings() {
   /* Controlled profile fields */
   const [fields, setFields] = useState({
     name: '', email: '', age: '', location: '', education: '',
+    country: '', educationLevel: '', fieldOfStudy: '', portfolio: '',
   })
 
   useEffect(() => {
@@ -39,17 +55,33 @@ export default function Settings() {
       age: profile.age?.toString() || '',
       location: profile.location || '',
       education: profile.education || '',
+      country: profile.country || '',
+      educationLevel: profile.educationLevel || '',
+      fieldOfStudy: profile.fieldOfStudy || '',
+      portfolio: profile.portfolioUrl || '',
     })
-  }, [profile.name, profile.displayName, profile.age, profile.location, profile.education, user?.email])
+  }, [
+    profile.name, profile.displayName, profile.age, profile.location, profile.education,
+    profile.country, profile.educationLevel, profile.fieldOfStudy, profile.portfolioUrl,
+    user?.email,
+  ])
 
   const handleSave = async () => {
     // Empty strings are not valid for these fields — send null (or omit) instead
-    const { error } = await setProfile({
+    const partial: Parameters<typeof setProfile>[0] = {
       displayName: fields.name || undefined,
       education: fields.education || null,
       location: fields.location || null,
+      country: fields.country || null,
+      fieldOfStudy: fields.fieldOfStudy || null,
+      portfolioUrl: fields.portfolio || null,
       age: fields.age ? Number(fields.age) : null,
-    })
+    }
+    // An explicit pick wins. Left empty, the backend derives the level from the
+    // qualification text in the same request.
+    if (fields.educationLevel) partial.educationLevel = fields.educationLevel
+
+    const { error } = await setProfile(partial)
     if (error) {
       setSaveFailed(true)
       setSaveMsg('Save failed: ' + error)
@@ -112,20 +144,47 @@ export default function Settings() {
                   <div className="card-noir p-6">
                     <div className="font-mono text-xs text-violet tracking-wider mb-4">PROFILE</div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {[
-                        { key: 'name' as const, label: 'FULL NAME' },
-                        { key: 'email' as const, label: 'EMAIL', readOnly: true },
-                        { key: 'age' as const, label: 'AGE' },
-                        { key: 'location' as const, label: 'LOCATION' },
-                        { key: 'education' as const, label: 'EDUCATION' },
-                      ].map((f) => (
+                      {([
+                        { key: 'name', label: 'FULL NAME' },
+                        { key: 'email', label: 'EMAIL', readOnly: true },
+                        { key: 'age', label: 'AGE' },
+                        { key: 'country', label: 'COUNTRY', placeholder: 'e.g. Pakistan' },
+                        { key: 'location', label: 'CITY / LOCATION', placeholder: 'e.g. Karachi' },
+                        { key: 'education', label: 'EDUCATION (AS YOU WRITE IT)', placeholder: 'e.g. BS Computer Science, 2027' },
+                        { key: 'fieldOfStudy', label: 'FIELD OF STUDY', placeholder: 'e.g. Computer Science' },
+                        { key: 'portfolio', label: 'PUBLIC PORTFOLIO URL', placeholder: 'https://…' },
+                      ] as { key: keyof typeof fields; label: string; readOnly?: boolean; placeholder?: string }[]).map((f) => (
                         <div key={f.label}>
                           <label className="font-mono text-[9px] text-dim tracking-wider block mb-1">{f.label}</label>
-                          <input value={fields[f.key]} readOnly={f.readOnly}
+                          <input value={fields[f.key]} readOnly={f.readOnly} placeholder={f.placeholder}
                             onChange={(e) => setFields(prev => ({ ...prev, [f.key]: e.target.value }))}
-                            className={`w-full bg-void border border-white/[0.07] rounded-xl px-3 py-2.5 font-mono text-xs text-bone focus:outline-none focus:border-[rgba(124,58,237,0.5)] transition-colors ${f.readOnly ? 'opacity-50 cursor-not-allowed' : ''}`} />
+                            className={`w-full bg-void border border-white/[0.07] rounded-xl px-3 py-2.5 font-mono text-xs text-bone placeholder:text-dim/60 focus:outline-none focus:border-[rgba(124,58,237,0.5)] transition-colors ${f.readOnly ? 'opacity-50 cursor-not-allowed' : ''}`} />
                         </div>
                       ))}
+                      <div>
+                        <label className="font-mono text-[9px] text-dim tracking-wider block mb-1">EDUCATION LEVEL</label>
+                        <select
+                          value={fields.educationLevel}
+                          onChange={(e) => setFields(prev => ({ ...prev, educationLevel: e.target.value }))}
+                          className="w-full bg-void border border-white/[0.07] rounded-xl px-3 py-2.5 font-mono text-xs text-bone focus:outline-none focus:border-[rgba(124,58,237,0.5)] transition-colors cursor-pointer">
+                          {EDUCATION_LEVELS.map((level) => (
+                            <option key={level.value || 'AUTO'} value={level.value} className="bg-void">{level.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* What the new structured fields are for — and the hard limit on
+                        the public URL: it is read as untrusted text, never as truth. */}
+                    <div className="mt-4 font-mono text-[10px] text-dim leading-relaxed">
+                      Country, education level and field of study are compared against the real
+                      requirements an investigation finds. Leave anything you do not want recorded
+                      empty — an absent value stays “not recorded”, never a guess.
+                    </div>
+                    <div className="mt-2 font-mono text-[10px] text-dim leading-relaxed">
+                      The portfolio URL must be a public page. Trustlify reads it with the same safe
+                      fetcher it uses for sources (no logins, no private pages), treats it as
+                      untrusted text, and never overwrites the fields above with it.
                     </div>
                     {profile.skills && profile.skills.length > 0 && (
                       <div className="mt-4">
@@ -158,6 +217,13 @@ export default function Settings() {
               {active === 'Language' && (
                 <motion.div key="lang" {...fade} className="card-noir p-6">
                   <div className="font-mono text-xs text-violet tracking-wider mb-4">LANGUAGE PREFERENCE</div>
+                  {/* What Roman Urdu does — and the exact limit of it (no machine translation). */}
+                  <p className="font-mono text-[10px] text-dim leading-relaxed mb-4">
+                    Roman Urdu changes how Trustlify presents its own structured result: section
+                    headings, status words and the summary sentences. Evidence, quoted excerpts,
+                    source titles, URLs and your own question stay exactly as they are. It uses fixed
+                    templates — no AI is called to translate anything.
+                  </p>
                   <div className="space-y-2">
                     {[
                       { label: 'English', available: true },

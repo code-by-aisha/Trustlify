@@ -8,7 +8,11 @@
 
 import { describe, it, expect } from "vitest";
 import { normalizeInvestigationInput } from "../investigation/inputNormalizer.js";
-import { createInvestigationSchema } from "../validators/investigation.js";
+import { classifyQuestionIntent } from "../investigation/questionIntent.js";
+import {
+  MAX_QUESTION_LENGTH,
+  createInvestigationSchema,
+} from "../validators/investigation.js";
 
 /* ─── 1. Text only — unchanged behaviour ──────────────────────────────────── */
 
@@ -108,5 +112,62 @@ describe("URL input with an optional question", () => {
         investigationQuestion: "Is this legit?",
       }),
     ).toThrow();
+  });
+});
+
+/* ─── 4. Image + question (multi-question update spec 20) ────────────────── */
+
+describe("image input with a question", () => {
+  it("keeps file, caption and question as three separate fields", () => {
+    const parsed = createInvestigationSchema.parse({
+      inputType: "image",
+      inputFilePath: "user-1/inv-1/poster.png",
+      inputText: "Scholarship poster a group admin forwarded",
+      investigationQuestion: "Is this outdated and can I apply?",
+    });
+
+    expect(parsed.inputFilePath).toBe("user-1/inv-1/poster.png");
+    expect(parsed.investigationQuestion).toBe("Is this outdated and can I apply?");
+
+    // What the claims are extracted from is still only the image + its caption.
+    const normalized = normalizeInvestigationInput({
+      inputType: "image",
+      inputFilePath: parsed.inputFilePath,
+      inputText: parsed.inputText,
+    });
+    expect(normalized.fileId).toBe("user-1/inv-1/poster.png");
+    expect(normalized.content).toBe("Scholarship poster a group admin forwarded");
+    expect(normalized.content).not.toContain("outdated");
+
+    // And the question is classified on its own, deterministically.
+    expect(classifyQuestionIntent(parsed.investigationQuestion)).toBe("ELIGIBILITY");
+  });
+
+  it("caps a long question to the stored length, and rejects an absurd one", () => {
+    const parsed = createInvestigationSchema.parse({
+      inputType: "image",
+      inputFilePath: "user-1/inv-1/poster.png",
+      investigationQuestion: "a".repeat(MAX_QUESTION_LENGTH * 2),
+    });
+    expect(parsed.investigationQuestion).toHaveLength(MAX_QUESTION_LENGTH);
+    // Still inert data: the cap cannot turn a long paste into another intent.
+    expect(classifyQuestionIntent(parsed.investigationQuestion)).toBe("GENERAL");
+
+    expect(
+      createInvestigationSchema.safeParse({
+        inputType: "image",
+        inputFilePath: "user-1/inv-1/poster.png",
+        investigationQuestion: "a".repeat(MAX_QUESTION_LENGTH * 2 + 1),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("an image with no question behaves exactly as it did before", () => {
+    const parsed = createInvestigationSchema.parse({
+      inputType: "image",
+      inputFilePath: "user-1/inv-1/poster.png",
+    });
+    expect(parsed.investigationQuestion).toBeUndefined();
+    expect(classifyQuestionIntent(parsed.investigationQuestion)).toBe("GENERAL");
   });
 });

@@ -173,7 +173,38 @@ export type InvestigationIntent =
   | 'CURRENTNESS'
   | 'DEADLINE'
   | 'LEGITIMACY'
+  | 'EXPLANATION'
+  | 'SIMILAR_OPPORTUNITIES'
   | 'GENERAL'
+
+/**
+ * Order in which the interpretation blocks are presented, chosen deterministically
+ * from the intent. The raw claims/evidence/sources appendix is never reordered.
+ */
+export type IntelligenceSectionKey =
+  | 'currentness'
+  | 'match'
+  | 'recommendedSource'
+  | 'verdictReasons'
+  | 'actions'
+
+export type PublicProfileStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_PROVIDED'
+
+/** Supplementary facts read from the student's own PUBLIC portfolio page. */
+export interface PublicProfileEvidence {
+  url: string | null
+  domain: string | null
+  status: PublicProfileStatus
+  reason: string | null
+  fetchedAt: string | null
+  skills: string[]
+  fields: string[]
+  educationLines: string[]
+  projectLines: string[]
+  certificationLines: string[]
+  experienceYears: number | null
+  note: string
+}
 
 export type RequirementKind =
   | 'country'
@@ -272,6 +303,8 @@ export interface StudentIntelligence {
   question: string | null
   intent: InvestigationIntent | null
   answer: string[]
+  /** Presentation order for the blocks below — driven by `intent`. */
+  emphasis: IntelligenceSectionKey[]
   currentness: {
     opportunity: OpportunityCurrency
     deadline: DeadlineAssessment
@@ -281,6 +314,38 @@ export interface StudentIntelligence {
   studentMatch: EligibilityMatch | null
   recommendedSource: RecommendedSource | null
   recommendedActions: string[]
+  /** Null unless the student saved a public portfolio URL. */
+  publicProfile: PublicProfileEvidence | null
+}
+
+/* ─── Similar opportunities (user-triggered, never part of a run) ─────────── */
+
+export interface SimilarOpportunityMatch {
+  result: EligibilityResult
+  matchScore: number | null
+  checks: RequirementCheck[]
+  /** Says out loud how thin the input was. */
+  basis: 'search snippet'
+}
+
+export interface SimilarOpportunity {
+  title: string
+  url: string
+  domain: string
+  sourceType: string
+  why: string[]
+  match: SimilarOpportunityMatch | null
+  deadlineIso: string | null
+  deadlineDetail: string | null
+  priorVerdict: string | null
+}
+
+export interface SimilarOpportunitiesResult {
+  items: SimilarOpportunity[]
+  queries: string[]
+  searchesRun: number
+  filteredOut: number
+  note: string
 }
 
 /** Internal investigation event types (derived from persisted rows) */

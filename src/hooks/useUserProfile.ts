@@ -14,6 +14,16 @@ export interface UserProfile {
   displayName?: string | null
   name: string // alias for displayName
   education: string | null
+  /**
+   * Structured companion to `education` (profile-structure update). The select
+   * in the UI writes both, and the backend re-derives this one from the text
+   * whenever only the text changed, so the two can never disagree.
+   */
+  educationLevel?: string | null
+  /** Country name, e.g. "Pakistan" — `location` stays the city/region text. */
+  country?: string | null
+  /** Discipline studied, e.g. "Computer Science". */
+  fieldOfStudy?: string | null
   age?: number | null
   location: string | null
   skills: string[]
@@ -31,6 +41,9 @@ const emptyProfile: UserProfile = {
   name: '',
   displayName: null,
   education: '',
+  educationLevel: null,
+  country: null,
+  fieldOfStudy: null,
   location: '',
   skills: [],
   interests: [],
@@ -134,6 +147,9 @@ export function useUserProfile() {
       body.displayName = partial.displayName ?? partial.name
     }
     if (partial.education !== undefined) body.education = partial.education
+    if (partial.educationLevel !== undefined) body.educationLevel = partial.educationLevel
+    if (partial.country !== undefined) body.country = partial.country
+    if (partial.fieldOfStudy !== undefined) body.fieldOfStudy = partial.fieldOfStudy
     if (partial.age !== undefined) body.age = partial.age
     if (partial.location !== undefined) body.location = partial.location
     if (partial.skills !== undefined) body.skills = partial.skills

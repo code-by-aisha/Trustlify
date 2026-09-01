@@ -1,8 +1,11 @@
+import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button, StatusBadge } from '@/components/ui'
 import { useInvestigation } from '@/hooks/useInvestigation'
+import { useUserProfile } from '@/hooks/useUserProfile'
+import { apiFetch } from '@/lib/supabase'
 import type {
   BadgeStatus,
   Claim,
@@ -11,11 +14,24 @@ import type {
   EligibilityResult,
   Evidence,
   EvidenceRelation,
+  IntelligenceSectionKey,
   OpportunityCurrencyState,
   RequirementCheck,
+  SimilarOpportunitiesResult,
   Source,
   Verdict,
 } from '@/types'
+import {
+  currencyLabel,
+  deadlineLabel,
+  eligibilityLabel,
+  isRomanUrdu,
+  outcomeLabel,
+  ROMAN_URDU_SCOPE_NOTE,
+  romanUrduBrief,
+  sectionLabel,
+  verdictLabel,
+} from '@/i18n/resultTemplates'
 
 const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5 } }
 
@@ -141,11 +157,31 @@ function SectionTitle({ text, tone }: { text: string; tone: string }) {
   return <div className={`font-mono text-xs ${tone} tracking-wider mb-4`}>{text}</div>
 }
 
+/** Used when an investigation was stored before emphasis existed. */
+const FALLBACK_SECTION_ORDER: IntelligenceSectionKey[] = [
+  'currentness',
+  'match',
+  'recommendedSource',
+  'verdictReasons',
+  'actions',
+]
+
 /** ✓ / ✗ / ? lines — each one names the real requirement and the real profile fact. */
-function CheckList({ checks, mark, tone }: { checks: RequirementCheck[]; mark: string; tone: string }) {
+function CheckList({
+  checks,
+  mark,
+  tone,
+  title,
+}: {
+  checks: RequirementCheck[]
+  mark: string
+  tone: string
+  title: string
+}) {
   if (checks.length === 0) return null
   return (
     <div className="space-y-2">
+      <div className={`font-mono text-[10px] ${tone} tracking-wider`}>{title}</div>
       {checks.map((check, i) => (
         <div key={`${check.kind}-${i}`} className="flex items-start gap-3">
           <span className={`font-mono text-sm ${tone} flex-shrink-0 mt-0.5`}>{mark}</span>
@@ -167,6 +203,15 @@ export default function InvestigationResult() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
   const { investigation, isLoading, error, notFound } = useInvestigation(id)
+  // Only the persisted language preference is read here — this page never
+  // changes it, and the translation itself is a static template table.
+  const { profile } = useUserProfile()
+
+  // Similar-opportunity discovery is user-triggered only: loading a result never
+  // searches, and the response is held in memory (nothing is persisted).
+  const [similar, setSimilar] = useState<SimilarOpportunitiesResult | null>(null)
+  const [similarBusy, setSimilarBusy] = useState(false)
+  const [similarError, setSimilarError] = useState<string | null>(null)
 
   if (isLoading && !investigation) {
     return (
@@ -212,6 +257,26 @@ export default function InvestigationResult() {
     intel?.recommendedActions?.length
       ? intel.recommendedActions
       : decision?.recommendedAction ?? []
+
+  const roman = isRomanUrdu(profile.language)
+  const isStudentUser = String(profile.role ?? '').toLowerCase() === 'student'
+  const sectionOrder = intel?.emphasis?.length
+    ? intel.emphasis
+    : FALLBACK_SECTION_ORDER
+
+  const findSimilar = async () => {
+    if (!id || similarBusy) return
+    setSimilarBusy(true)
+    setSimilarError(null)
+    try {
+      const res = await apiFetch(`/api/investigations/${id}/similar`, { method: 'POST' })
+      setSimilar(res.data as SimilarOpportunitiesResult)
+    } catch (err) {
+      setSimilarError(err instanceof Error ? err.message : 'Similar opportunities could not be loaded.')
+    } finally {
+      setSimilarBusy(false)
+    }
+  }
 
   return (
     <AppShell>
@@ -260,10 +325,10 @@ export default function InvestigationResult() {
                 <div className="flex flex-wrap items-end gap-8 mb-4">
                   <div>
                     <h1 className={`font-display ${style.color}`} style={{ fontSize: 'clamp(40px,6vw,72px)', fontWeight: 300, lineHeight: 1 }}>
-                      {style.title}
+                      {roman ? verdictLabel(verdict, true) : style.title}
                     </h1>
                     <div className="mt-3">
-                      <StatusBadge status={style.badge} />
+                      <StatusBadge status={style.badge} label={roman ? verdictLabel(verdict, true) : undefined} />
                     </div>
                   </div>
                   {trustScore !== null && (
@@ -348,7 +413,7 @@ export default function InvestigationResult() {
             {/* You asked — the question is answered from this run's own outputs */}
             {intel?.question && (
               <div className="mb-8">
-                <SectionTitle text="YOU ASKED" tone="text-violet" />
+                <SectionTitle text={sectionLabel('youAsked', roman)} tone="text-violet" />
                 <div className="card-noir-violet p-6">
                   <p
                     className="font-display text-lg text-bone leading-relaxed mb-4"
@@ -375,15 +440,169 @@ export default function InvestigationResult() {
               </div>
             )}
 
-            {/* Currentness + deadline — read from the dates the content actually states */}
-            {intel && (
+            {/* Roman Urdu view — deterministic templates over the computed states. */}
+            {roman && intel && (
               <div className="mb-8">
-                <SectionTitle text="CURRENTNESS" tone="text-caution" />
+                <SectionTitle text="KHULASA (ROMAN URDU)" tone="text-lime" />
+                <div className="card-noir p-6">
+                  <div className="space-y-3">
+                    {romanUrduBrief({
+                      verdict,
+                      eligibility: intel.studentMatch?.result ?? null,
+                      blockers: intel.studentMatch?.missing.map((check) => check.kind) ?? [],
+                      currency: intel.currentness.opportunity.state,
+                      deadline: intel.currentness.deadline.state,
+                    }).map((line, i) => (
+                      <div key={i} className="flex items-start gap-3">
+                        <span className="font-mono text-xs text-lime flex-shrink-0 mt-0.5">{String(i + 1).padStart(2, '0')}</span>
+                        <span className="font-mono text-sm text-bone leading-relaxed">{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 font-mono text-[10px] text-dim leading-relaxed">
+                    {ROMAN_URDU_SCOPE_NOTE}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/*
+             * Question-aware presentation (spec 08). This wrapper opens here so
+             * that every block below it — including BETTER MATCHES — obeys one
+             * priority order: the blocks the backend's `emphasis` ranks come
+             * first, and the opt-in recommendation CTA is deliberately placed
+             * after them. A student who asked about eligibility gets their
+             * answer above a button that offers to search for something else.
+             */}
+            <div className="flex flex-col">
+            {/* Better matches — fetched only when the student presses the button. */}
+            {isComplete && isStudentUser && (
+              <div className="mb-8" style={{ order: sectionOrder.length + 1 }}>
+                <SectionTitle text={sectionLabel('betterMatches', roman)} tone="text-violet" />
+                <div className="card-noir p-6">
+                  {similarBusy && (
+                    <div className="font-mono text-xs text-dim animate-progress-pulse">
+                      SEARCHING — MAX 2 QUERIES…
+                    </div>
+                  )}
+
+                  {!similarBusy && !similar && (
+                    <>
+                      <p className="font-mono text-sm text-soft leading-relaxed mb-4">
+                        Trustlify will not invent alternatives. This runs at most two searches on the
+                        same provider the investigation already used, built from your profile and this
+                        content by code — never by a model. It only runs because you asked.
+                      </p>
+                      <Button variant="violet" size="sm" onClick={findSimilar}>
+                        {roman ? 'AUR MOUQE DIYEN' : 'FIND SIMILAR OPPORTUNITIES'}
+                      </Button>
+                    </>
+                  )}
+
+                  {similarError && (
+                    <div className="font-mono text-[10px] text-danger">{similarError}</div>
+                  )}
+
+                  {similar && !similarBusy && (
+                    <div className="space-y-1">
+                      <div className="font-mono text-[10px] text-dim leading-relaxed mb-2">
+                        {similar.searchesRun} SEARCH{similar.searchesRun === 1 ? '' : 'ES'} ·{' '}
+                        {similar.items.length} SHOWN · {similar.filteredOut} FILTERED OUT
+                      </div>
+                      <div className="font-mono text-[10px] text-dim leading-relaxed mb-2">
+                        QUERIES USED: {similar.queries.map((query) => `“${query}”`).join(' · ')}
+                      </div>
+
+                      {similar.items.length === 0 && (
+                        <div className="font-mono text-xs text-caution">{similar.note}</div>
+                      )}
+
+                      {similar.items.map((item, i) => (
+                        <div key={item.url} className="pt-4 mt-4 border-t border-white/[0.06]">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-mono text-sm text-bone">{item.title}</div>
+                              <div className="font-mono text-[10px] text-dim mt-1">
+                                {item.domain} · TYPE: {item.sourceType.toUpperCase()} · LEAD{' '}
+                                {String(i + 1).padStart(2, '0')}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => window.open(item.url, '_blank', 'noopener,noreferrer')}
+                              className="px-3 py-1.5 rounded-lg border border-white/10 font-mono text-[10px] text-soft hover:border-violet hover:text-violet transition-all cursor-pointer flex-shrink-0">
+                              OPEN
+                            </button>
+                          </div>
+
+                          <div className="mt-2 space-y-1">
+                            {item.why.map((reason, j) => (
+                              <div key={j} className="font-mono text-[10px] text-soft leading-relaxed">
+                                · {reason}
+                              </div>
+                            ))}
+                          </div>
+
+                          {item.deadlineIso && (
+                            <div className="font-mono text-[10px] text-caution mt-2">
+                              DEADLINE STATED IN RESULT: {formatDate(item.deadlineIso)}
+                            </div>
+                          )}
+
+                          {item.match && (
+                            <div className="flex flex-wrap items-center gap-3 mt-2">
+                              <StatusBadge
+                                status={ELIGIBILITY_STYLE[item.match.result].badge}
+                                label={eligibilityLabel(item.match.result, roman)}
+                              />
+                              <span className="font-mono text-[10px] text-dim">
+                                {item.match.matchScore !== null
+                                  ? `${item.match.matchScore}/100 · `
+                                  : ''}
+                                from this listing’s own snippet text only
+                              </span>
+                            </div>
+                          )}
+
+                          {item.priorVerdict && (
+                            <div className="font-mono text-[10px] text-lime mt-2">
+                              ALREADY INVESTIGATED BY YOU: {item.priorVerdict}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+
+                      {similar.items.length > 0 && (
+                        <div className="pt-4 mt-4 border-t border-white/[0.06] font-mono text-[10px] text-dim leading-relaxed">
+                          {similar.note}
+                        </div>
+                      )}
+
+                      <div className="pt-4 mt-4 border-t border-white/[0.06]">
+                        <Button variant="outline" size="sm" onClick={findSimilar}>
+                          {roman ? 'DOBARA DUNDEN' : 'SEARCH AGAIN'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/*
+             * The blocks below are the same blocks, computed exactly as before.
+             * `emphasis` only sets their visual priority, so the DOM order (and
+             * every section) stays intact.
+             *
+             * Currentness + deadline — read from the dates the content actually states
+             */}
+            {intel && (
+              <div className="mb-8" style={{ order: sectionOrder.indexOf('currentness') + 1 }}>
+                <SectionTitle text={sectionLabel('currentness', roman)} tone="text-caution" />
                 <div className="card-noir p-6 space-y-4">
                   <div>
                     <StatusBadge
                       status={CURRENCY_STYLE[intel.currentness.opportunity.state].badge}
-                      label={CURRENCY_STYLE[intel.currentness.opportunity.state].label}
+                      label={currencyLabel(intel.currentness.opportunity.state, roman)}
                     />
                     <p className="font-mono text-sm text-soft leading-relaxed mt-2">
                       {intel.currentness.opportunity.detail}
@@ -394,7 +613,7 @@ export default function InvestigationResult() {
                     <div className="flex flex-wrap items-center gap-3">
                       <StatusBadge
                         status={DEADLINE_STYLE[intel.currentness.deadline.state].badge}
-                        label={DEADLINE_STYLE[intel.currentness.deadline.state].label}
+                        label={deadlineLabel(intel.currentness.deadline.state, roman)}
                       />
                       {intel.currentness.deadline.dates.length > 0 && (
                         <span className="font-mono text-[10px] text-dim">
@@ -430,17 +649,17 @@ export default function InvestigationResult() {
               const match = intel.studentMatch!
               const look = ELIGIBILITY_STYLE[match.result]
               return (
-                <div className="mb-8">
-                  <SectionTitle text="STUDENT MATCH" tone={look.color} />
+                <div className="mb-8" style={{ order: sectionOrder.indexOf('match') + 1 }}>
+                  <SectionTitle text={sectionLabel('studentMatch', roman)} tone={look.color} />
                   <div className="card-noir p-6">
                     <div className="flex flex-wrap items-end gap-8 mb-4">
                       <div>
                         <div className="font-mono text-[10px] text-dim mb-1">ELIGIBILITY (DETERMINISTIC COMPARISON)</div>
                         <h2 className={`font-display ${look.color}`} style={{ fontSize: 'clamp(28px,4vw,44px)', fontWeight: 300, lineHeight: 1 }}>
-                          {look.label}
+                          {eligibilityLabel(match.result, roman)}
                         </h2>
                         <div className="mt-3">
-                          <StatusBadge status={look.badge} label={look.label} />
+                          <StatusBadge status={look.badge} label={eligibilityLabel(match.result, roman)} />
                         </div>
                       </div>
                       {match.matchScore !== null && (
@@ -457,10 +676,80 @@ export default function InvestigationResult() {
                     <p className="font-mono text-sm text-soft leading-relaxed mb-5">{match.explanation}</p>
 
                     <div className="space-y-5">
-                      <CheckList checks={match.matched} mark="✓" tone="text-lime" />
-                      <CheckList checks={match.missing} mark="✗" tone="text-danger" />
-                      <CheckList checks={match.unknown} mark="?" tone="text-caution" />
+                      {/*
+                       * Spec 09: a deadline is a currency signal, not a quality of
+                       * the student. The matcher already keeps it out of the score;
+                       * it is also kept out of the profile-comparison lists so it can
+                       * never read as a requirement the student satisfied or failed.
+                       */}
+                      {(() => {
+                        const isDeadline = (check: RequirementCheck) => check.kind === 'deadline'
+                        const timing = [
+                          ...match.matched.filter(isDeadline),
+                          ...match.missing.filter(isDeadline),
+                          ...match.unknown.filter(isDeadline),
+                        ]
+                        return (
+                          <>
+                            <CheckList
+                              checks={match.matched.filter((check) => !isDeadline(check))}
+                              mark="✓"
+                              tone="text-lime"
+                              title={outcomeLabel('MATCHED', roman)}
+                            />
+                            <CheckList
+                              checks={match.missing.filter((check) => !isDeadline(check))}
+                              mark="✗"
+                              tone="text-danger"
+                              title={outcomeLabel('MISSING', roman)}
+                            />
+                            <CheckList
+                              checks={match.unknown.filter((check) => !isDeadline(check))}
+                              mark="?"
+                              tone="text-caution"
+                              title={outcomeLabel('UNKNOWN', roman)}
+                            />
+                            <CheckList
+                              checks={timing}
+                              mark="·"
+                              tone="text-caution"
+                              title={outcomeLabel('TIMING', roman)}
+                            />
+                          </>
+                        )
+                      })()}
                     </div>
+
+                    {/* What the student’s own public page added — or why it could not. */}
+                    {intel.publicProfile && (
+                      <div className="mt-5 pt-4 border-t border-white/[0.06]">
+                        <div className="font-mono text-[10px] text-dim tracking-wider mb-2">
+                          PUBLIC PORTFOLIO EVIDENCE
+                          {intel.publicProfile.domain ? ` · ${intel.publicProfile.domain}` : ''}
+                          {intel.publicProfile.fetchedAt ? ` · READ ${formatDate(intel.publicProfile.fetchedAt)}` : ''}
+                        </div>
+                        {intel.publicProfile.status === 'AVAILABLE' ? (
+                          <div className="font-mono text-[10px] text-soft leading-relaxed">
+                            {intel.publicProfile.skills.length > 0 && (
+                              <div>Skills seen on the page: {intel.publicProfile.skills.join(', ')}.</div>
+                            )}
+                            {intel.publicProfile.fields.length > 0 && (
+                              <div>Fields seen: {intel.publicProfile.fields.join(', ')}.</div>
+                            )}
+                            {intel.publicProfile.skills.length === 0 && intel.publicProfile.fields.length === 0 && (
+                              <div>No comparable skill or field statement was found in its visible text.</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="font-mono text-[10px] text-caution leading-relaxed">
+                            {intel.publicProfile.reason || 'The linked page could not be read.'}
+                          </div>
+                        )}
+                        <div className="mt-2 font-mono text-[10px] text-dim leading-relaxed">
+                          {intel.publicProfile.note}
+                        </div>
+                      </div>
+                    )}
 
                     <div className="mt-5 pt-4 border-t border-white/[0.06] font-mono text-[10px] text-dim leading-relaxed">
                       Compared against your saved student profile only. Trustlify does not invent a GPA, a document
@@ -473,8 +762,8 @@ export default function InvestigationResult() {
 
             {/* Recommended source — deterministic preference order over collected sources */}
             {intel && (
-              <div className="mb-8">
-                <SectionTitle text="RECOMMENDED SOURCE" tone="text-lime" />
+              <div className="mb-8" style={{ order: sectionOrder.indexOf('recommendedSource') + 1 }}>
+                <SectionTitle text={sectionLabel('recommendedSource', roman)} tone="text-lime" />
                 {intel.recommendedSource ? (
                   <div className="card-noir p-6">
                     <div className="flex items-start justify-between gap-4">
@@ -509,8 +798,10 @@ export default function InvestigationResult() {
 
             {/* Why this verdict — deterministic reasons (spec 29) */}
             {decision && decision.reasons.length > 0 && (
-              <div className="mb-8">
-                <div className="font-mono text-xs text-caution tracking-wider mb-4">WHY THIS VERDICT</div>
+              <div className="mb-8" style={{ order: sectionOrder.indexOf('verdictReasons') + 1 }}>
+                <div className="font-mono text-xs text-caution tracking-wider mb-4">
+                  {sectionLabel('whyVerdict', roman)}
+                </div>
                 <div className="card-noir p-6 space-y-3">
                   {decision.reasons.map((reason, i) => (
                     <div key={i} className="flex items-start gap-3">
@@ -524,8 +815,13 @@ export default function InvestigationResult() {
 
             {/* Recommended action (spec 30) — verdict action plus deterministic student steps */}
             {recommendedActions.length > 0 && (
-              <div className="card-noir-violet p-6 mb-8">
-                <div className="font-mono text-xs text-violet tracking-wider mb-3">RECOMMENDED ACTION</div>
+              <div
+                className="card-noir-violet p-6 mb-8"
+                style={{ order: sectionOrder.indexOf('actions') + 1 }}
+              >
+                <div className="font-mono text-xs text-violet tracking-wider mb-3">
+                  {sectionLabel('recommendedAction', roman)}
+                </div>
                 <div className="space-y-2">
                   {recommendedActions.map((action, i) => (
                     <div key={i} className="flex items-start gap-3">
@@ -537,9 +833,14 @@ export default function InvestigationResult() {
               </div>
             )}
 
+            </div>
+            {/* /question-aware presentation wrapper */}
+
             {/* Claims — real, deterministically verified */}
             <div className="mb-8">
-              <div className="font-mono text-xs text-violet tracking-wider mb-4">EXTRACTED CLAIMS</div>
+              <div className="font-mono text-xs text-violet tracking-wider mb-4">
+                {sectionLabel('claims', roman)}
+              </div>
               {claims.length > 0 ? (
                 <div className="space-y-2">
                   {claims.map((claim) => {
@@ -569,7 +870,9 @@ export default function InvestigationResult() {
 
             {/* Verified evidence — every excerpt checked against real source content */}
             <div className="mb-8">
-              <div className="font-mono text-xs text-lime tracking-wider mb-4">VERIFIED EVIDENCE</div>
+              <div className="font-mono text-xs text-lime tracking-wider mb-4">
+                {sectionLabel('evidence', roman)}
+              </div>
               {evidence.length > 0 ? (
                 <div className="space-y-2">
                   {evidence.map((item) => {
@@ -616,7 +919,9 @@ export default function InvestigationResult() {
 
             {/* Sources — real, conservatively classified */}
             <div className="mb-8">
-              <div className="font-mono text-xs text-lime tracking-wider mb-4">DISCOVERED SOURCES</div>
+              <div className="font-mono text-xs text-lime tracking-wider mb-4">
+                {sectionLabel('sources', roman)}
+              </div>
               {sources.length > 0 ? (
                 <div className="space-y-2">
                   {sources.map((source) => (

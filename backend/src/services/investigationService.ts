@@ -13,6 +13,16 @@ import { AppError } from "../middleware/errorHandler.js";
 import { runInvestigationInBackground } from "../investigation/executor.js";
 import { deriveInvestigationEvents } from "../investigation/events.js";
 import { deriveStudentIntelligence } from "./studentIntelligenceService.js";
+import {
+  getPublicProfileEvidence,
+  toMatcherProfileFacts,
+  type PublicProfileEvidence,
+} from "./profileEvidenceService.js";
+import {
+  findSimilarOpportunities,
+  type SimilarOpportunitiesResult,
+} from "./similarOpportunityService.js";
+import type { StudentProfileFacts } from "../engines/studentMatcher.js";
 import * as profileService from "./profileService.js";
 import type { CreateInvestigationInput } from "../validators/investigation.js";
 
@@ -252,7 +262,13 @@ export async function getInvestigation(
 interface BuildIntelligenceArgs {
   status: string;
   investigationQuestion: string | null;
-  claims: { id: string; text: string; type: string }[];
+  claims: {
+    id: string;
+    text: string;
+    type: string;
+    importance?: string | null;
+    status?: string | null;
+  }[];
   sources: {
     id: string;
     url: string;
@@ -283,10 +299,11 @@ async function buildStudentIntelligence(args: BuildIntelligenceArgs) {
 
   try {
     // Only students need the profile; general users see the existing result.
-    const profile =
+    const loaded =
       String(args.role ?? "").toLowerCase() === "student"
-        ? await profileService.getProfile(args.userId)
+        ? await loadStudentProfileFacts(args.userId)
         : null;
+    const profile = loaded?.facts ?? null;
 
     return deriveStudentIntelligence({
       investigationQuestion: args.investigationQuestion,
@@ -302,24 +319,149 @@ async function buildStudentIntelligence(args: BuildIntelligenceArgs) {
           }
         : null,
       submittedDomain: args.submittedDomain,
-      profile: profile
-        ? {
-            role: profile.role,
-            education: profile.education,
-            age: profile.age,
-            location: profile.location,
-            skills: profile.skills,
-            interests: profile.interests,
-            experience: profile.experience,
-            portfolioUrl: profile.portfolioUrl,
-            language: profile.language,
-          }
-        : null,
+      publicProfile: loaded?.publicProfile ?? null,
+      profile,
     });
   } catch (error) {
     console.error("[investigations] student intelligence derivation failed", error);
     return null;
   }
+}
+
+/**
+ * Read the persisted student profile and turn it into the matcher's input,
+ * plus any supplementary facts the student's own PUBLIC portfolio page states.
+ *
+ * The portfolio page is never allowed to overwrite a saved field: it can only
+ * add skill evidence, attributed to its domain, inside the matcher (spec 05).
+ */
+async function loadStudentProfileFacts(userId: string): Promise<{
+  facts: StudentProfileFacts;
+  publicProfile: PublicProfileEvidence | null;
+} | null> {
+  const profile = await profileService.getProfile(userId);
+  if (!profile) return null;
+
+  // Fetched only when a URL was actually saved, so a profile without one pays
+  // nothing. The extractor is the existing SSRF-safe one and never throws.
+  const publicProfile = profile.portfolioUrl
+    ? await getPublicProfileEvidence(profile.portfolioUrl, userId)
+    : null;
+  const portfolioFacts = publicProfile
+    ? toMatcherProfileFacts(publicProfile)
+    : { publicProfileSkills: null as string[] | null, publicProfileDomain: null as string | null };
+
+  return {
+    publicProfile,
+    facts: {
+      role: profile.role,
+      education: profile.education,
+      // Structured fields — they refine the comparison, the free-text
+      // columns stay authoritative when these are empty.
+      country: profile.country,
+      educationLevel: profile.educationLevel,
+      fieldOfStudy: profile.fieldOfStudy,
+      age: profile.age,
+      location: profile.location,
+      skills: profile.skills,
+      interests: profile.interests,
+      experience: profile.experience,
+      portfolioUrl: profile.portfolioUrl,
+      language: profile.language,
+      publicProfileSkills: portfolioFacts.publicProfileSkills,
+      publicProfileDomain: portfolioFacts.publicProfileDomain,
+    },
+  };
+}
+
+/**
+ * Similar-opportunity discovery for one COMPLETED investigation the caller owns.
+ *
+ * This is the only path that spends a search outside an investigation, and it
+ * runs only because the student asked for it (spec 12/23). At most
+ * MAX_SEARCHES queries go through the existing Tavily provider, and every
+ * ranking, match note and reason is produced by the deterministic engines.
+ */
+export async function getSimilarOpportunities(
+  id: string,
+  userId: string,
+  role: string | null,
+): Promise<SimilarOpportunitiesResult> {
+  if (String(role ?? "").toLowerCase() !== "student") {
+    throw new AppError(
+      403,
+      "SIMILAR_STUDENT_ONLY",
+      "Similar-opportunity discovery compares a student profile, so it is limited to student accounts.",
+    );
+  }
+
+  // Ownership + RLS-scoped read is enforced inside getInvestigation.
+  const investigation = await getInvestigation(id, userId, { role });
+
+  if (investigation.status !== "complete") {
+    throw new AppError(
+      409,
+      "INVESTIGATION_NOT_COMPLETE",
+      "Trustlify suggests similar opportunities from what an investigation already found, so it waits for this one to finish.",
+    );
+  }
+
+  const loaded = await loadStudentProfileFacts(userId);
+
+  return findSimilarOpportunities(
+    {
+      profile: loaded?.facts ?? null,
+      claims: investigation.claims.map((claim) => ({
+        id: claim.id,
+        text: claim.text,
+        type: claim.type,
+      })),
+      submittedUrl: investigation.inputText ?? investigation.originalUrl ?? null,
+      submittedDomain: investigation.originalDomain ?? null,
+      knownDomains: [
+        ...new Set(investigation.sources.map((source) => source.domain).filter(Boolean)),
+      ] as string[],
+    },
+    { priorVerdicts: (urls) => priorVerdictsFor(userId, urls) },
+  );
+}
+
+/**
+ * Trustlify's own stored verdicts for these exact URLs — the only trust label a
+ * recommendation may carry (spec 14). A lookup failure simply means no label.
+ */
+async function priorVerdictsFor(
+  userId: string,
+  urls: string[],
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  if (urls.length === 0) return found;
+
+  for (const column of ["input_text", "original_url"] as const) {
+    const { data, error } = await supabaseAdmin
+      .from("investigations")
+      .select(`${column}, verdict, trust_score`)
+      .eq("user_id", userId)
+      .eq("status", "complete")
+      .in(column, urls);
+
+    if (error) {
+      console.error("[investigations] prior verdict lookup failed", error.code ?? error.message);
+      return found;
+    }
+
+    for (const row of (data ?? []) as Record<string, unknown>[]) {
+      const url = row[column];
+      const verdict = row.verdict;
+      const score = row.trust_score;
+      if (typeof url !== "string" || typeof verdict !== "string" || found.has(url)) continue;
+      found.set(
+        url,
+        `${verdict}${typeof score === "number" ? ` · trust ${score}/100` : ""} — investigated earlier by you`,
+      );
+    }
+  }
+  return found;
 }
 
 /** The executor persists queries joined with " | " — split them back apart. */
