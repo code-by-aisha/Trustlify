@@ -751,9 +751,17 @@ function Footer() {
   return (
     <footer className="border-t border-white/[0.06] py-14 md:py-16">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-10 md:gap-8">
+        {/* Responsive tiers:
+              < 640px  →  single column, tighter gap so the stacked footer
+                            stays short but every group remains readable.
+              640-1023 →  2x2 tablet grid. Every column gets roughly half
+                            the container so links, headings and the brand
+                            description breathe without a desktop squeeze.
+              >= 1024  →  the 12-col / 5+3+2+2 desktop arrangement, unchanged.
+          */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-8 sm:gap-10 lg:gap-8">
           {/* Brand column */}
-          <div className="md:col-span-5">
+          <div className="lg:col-span-5">
             <div className="flex items-center gap-2.5 mb-3">
               <TrustlifyLogo size={5} />
               <span className="font-mono font-semibold text-sm tracking-wider text-bone">TRUSTLIFY</span>
@@ -767,7 +775,7 @@ function Footer() {
           </div>
 
           {/* Explore — anchor scrolls within this page */}
-          <div className="md:col-span-3">
+          <div className="lg:col-span-3">
             <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Explore</div>
             <ul className="space-y-2.5">
               <li><button type="button" onClick={() => scrollTo('how-it-works')} className={linkCls}>How it works</button></li>
@@ -779,7 +787,7 @@ function Footer() {
           </div>
 
           {/* Start column — real routes only */}
-          <div className="md:col-span-2">
+          <div className="lg:col-span-2">
             <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Start</div>
             <ul className="space-y-2.5">
               <li><button type="button" onClick={() => navigate('/auth')} className={linkCls}>Log in</button></li>
@@ -789,7 +797,7 @@ function Footer() {
           </div>
 
           {/* What it checks — non-interactive text, honest about scope */}
-          <div className="md:col-span-2">
+          <div className="lg:col-span-2">
             <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Every verdict weighs</div>
             <ul className="space-y-2 font-mono text-[11px] text-dim leading-relaxed">
               <li>Source authority</li>
