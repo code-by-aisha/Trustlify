@@ -25,6 +25,28 @@ const educationLevelField = z
   .nullable()
   .optional();
 
+/**
+ * Skills and interests are free text the student owns, so the same entry can
+ * arrive as "Python", "python" or " Python ". They are compared case
+ * insensitively everywhere else (matcher, recommendation queries), so the API
+ * collapses the spellings once, at the door, keeping the first wording the
+ * student used. A blank entry means "nothing recorded" and is dropped rather
+ * than rejected, because the chip UI can legitimately send one while clearing.
+ */
+const skillList = (max: number) =>
+  z
+    .array(z.string().trim().max(100))
+    .max(max)
+    .transform((items) => {
+      const seen = new Set<string>()
+      return items.filter((item) => {
+        const key = item.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    });
+
 export const createProfileSchema = z.object({
   displayName: z.string().min(1).max(200).optional(),
   role: z.enum(["student", "general"]).optional(),
@@ -34,8 +56,8 @@ export const createProfileSchema = z.object({
   location: z.string().min(1).max(200).nullable().optional(),
   country: optionalText(120),
   fieldOfStudy: optionalText(200),
-  skills: z.array(z.string().min(1).max(100)).max(50).optional(),
-  interests: z.array(z.string().min(1).max(100)).max(50).optional(),
+  skills: skillList(50).optional(),
+  interests: skillList(50).optional(),
   experience: z.string().min(1).max(2000).nullable().optional(),
   portfolioUrl: z.string().url().nullable().optional(),
 });
@@ -50,8 +72,8 @@ export const updateProfileSchema = z.object({
   location: z.string().min(1).max(200).nullable().optional(),
   country: optionalText(120),
   fieldOfStudy: optionalText(200),
-  skills: z.array(z.string().min(1).max(100)).max(50).optional(),
-  interests: z.array(z.string().min(1).max(100)).max(50).optional(),
+  skills: skillList(50).optional(),
+  interests: skillList(50).optional(),
   experience: z.string().min(1).max(2000).nullable().optional(),
   // Optional public portfolio / profile link. Validated as a real URL, and
   // treated strictly as untrusted public content wherever it is read.

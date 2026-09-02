@@ -109,6 +109,28 @@ export function useMouseParallax() {
 }
 
 /**
+ * Tracks a CSS media query. Used to pick between the two hero compositions.
+ * Falls back to `false` where matchMedia is unavailable (jsdom), so a consumer
+ * gets the simpler composition rather than a crash.
+ */
+export function useMediaQuery(query: string): boolean {
+  const read = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false
+  const [matches, setMatches] = useState(read)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(query)
+    setMatches(mq.matches)
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches)
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [query])
+  return matches
+}
+
+/**
  * Respects prefers-reduced-motion.
  */
 export function useReducedMotion(): boolean {

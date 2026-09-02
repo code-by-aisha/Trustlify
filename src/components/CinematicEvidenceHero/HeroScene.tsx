@@ -1,7 +1,6 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useRef, useState } from 'react'
 import { motion, useMotionValueEvent, useReducedMotion, useScroll, useTransform } from 'framer-motion'
 import { HeroArtifactSequence } from './HeroArtifactSequence'
-import { InstagramArtifact, WhatsAppArtifact } from './HeroArtifacts'
 import { HeroDecision } from './HeroDecision'
 import { HeroNetwork } from './HeroNetwork'
 import { HeroOrbitalSphere } from './HeroOrbitalSphere'
@@ -87,52 +86,28 @@ function PhaseTimeline({ progress }: { progress: number }) {
   )
 }
 
-/* ─── Mobile / tablet evidence preview ─────────────────────────────────────
- * Uses fixed-size overflow wrappers instead of raw scale transforms:
- * a CSS scale does not shrink the layout box, which previously made the
- * stacked mobile column taller than the viewport and pushed the heading
- * off-screen inside the clipped sticky stage.
- * ───────────────────────────────────────────────────────────────────────── */
-
-function ScaledPost({ w, h, scale, className = '', children }: {
-  w: number; h: number; scale: number; className?: string; children: ReactNode
-}) {
-  return (
-    <div className={`relative overflow-hidden ${className}`} style={{ width: w, height: h }} aria-hidden="true">
-      <div className="absolute left-0 top-0 origin-top-left" style={{ transform: `scale(${scale})` }}>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-function MobileEvidencePreview() {
-  return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex items-start justify-end gap-4 px-4 lg:hidden" aria-hidden="true">
-      {/* Instagram — primary post, always visible */}
-      <ScaledPost w={156} h={250} scale={0.52}>
-        <InstagramArtifact />
-      </ScaledPost>
-      {/* WhatsApp — secondary, tablet only */}
-      <div className="hidden sm:block">
-        <ScaledPost w={140} h={200} scale={0.48} className="mt-10">
-          <WhatsAppArtifact />
-        </ScaledPost>
-      </div>
-    </div>
-  )
-}
-
 /* ─── Main hero scene ─────────────────────────────────────────────────────── */
+
+/*
+ * One stage, one set of layers, at every size. The post gallery, the evidence tree
+ * and the verdict card are always mounted; heroSceneLayout decides how large each
+ * is drawn and how far it travels. They used to be switched off below `lg` and
+ * replaced by a static preview card, which is why a phone showed one post parked
+ * near the buttons from the first frame — never arriving, never leaving — and no
+ * graph at all.
+ */
 
 export function HeroScene({ navigate }: { navigate: (path: string) => void }) {
   const heroRef = useRef<HTMLElement>(null)
   const reduced = useReducedMotion()
   const pointer = useHeroPointer()
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end end'] })
-  const values = useHeroScroll(scrollYProgress)
+  /* A section with no scroll distance to travel reports NaN, which would otherwise
+   * be written into every layer transform at once and freeze the scene mid-flight. */
+  const stageProgress = useTransform(scrollYProgress, (v: number) => (Number.isFinite(v) ? v : 0))
+  const values = useHeroScroll(stageProgress)
   const [progress, setProgress] = useState(0)
-  useMotionValueEvent(scrollYProgress, 'change', setProgress)
+  useMotionValueEvent(stageProgress, 'change', setProgress)
 
   const sceneScale = useTransform(values.sceneRecede, [0, 1], [1, 0.92])
   const sceneOpacity = useTransform(values.sceneRecede, [0, 1], [1, 0.7])
@@ -156,8 +131,11 @@ export function HeroScene({ navigate }: { navigate: (path: string) => void }) {
           y={pointer.bgY}
         />
 
-        {/* Scene layers (recede at the end, 3D perspective for artifacts) */}
+        {/* Scene layers (recede at the end, 3D perspective for artifacts).
+         * `data-hero-scene` marks the group as always-on: nothing inside it may be
+         * switched off with `display: none` at any breakpoint. */}
         <motion.div
+          data-hero-scene=""
           className="absolute inset-0"
           style={{
             scale: sceneScale,
@@ -175,9 +153,6 @@ export function HeroScene({ navigate }: { navigate: (path: string) => void }) {
           <HeroTypography values={values} navigate={navigate} />
           <div className="hidden h-[660px] lg:block" aria-hidden="true" />
         </div>
-
-        {/* Mobile / tablet posts — pinned to the stage so they never overflow the bottom edge */}
-        <MobileEvidencePreview />
 
         {/* Phase timeline — labels on left side, dots on right, safe from clipping */}
         <PhaseTimeline progress={progress} />

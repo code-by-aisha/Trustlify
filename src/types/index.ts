@@ -235,14 +235,39 @@ export type EligibilityResult =
   | 'NOT_ELIGIBLE'
   | 'INSUFFICIENT_DATA'
 
+/**
+ * Per-dimension verdict in the match explanation. The two NOT_ states never
+ * contribute to the score — they exist so an unassessed dimension is not read
+ * as a hidden failure.
+ */
+export type DimensionState =
+  | 'SATISFIED'
+  | 'NOT_SATISFIED'
+  | 'NOT_STATED'
+  | 'NOT_COMPARABLE'
+
+export interface DimensionStatus {
+  kind: RequirementKind
+  state: DimensionState
+  /** True only when this dimension was counted in `matchScore`. */
+  counted: boolean
+  source: string | null
+  detail: string
+}
+
 /** Distinct from the legacy per-field StudentMatchResult demo type. */
 export interface EligibilityMatch {
   result: EligibilityResult
-  /** 0–100, or null when nothing could be checked */
+  /** 0–100 over comparable requirements, or null when none could be checked */
   matchScore: number | null
   matched: RequirementCheck[]
   missing: RequirementCheck[]
   unknown: RequirementCheck[]
+  /**
+   * One row per profile dimension. Optional because persisted investigations
+   * predating this pass carry no breakdown and must render exactly as before.
+   */
+  dimensions?: DimensionStatus[]
   explanation: string
 }
 

@@ -95,11 +95,17 @@ describe("student match engine", () => {
     });
 
     expect(result.result).toBe("PARTIALLY_ELIGIBLE");
-    // 3 matched + 1 unknown at half credit
-    expect(result.matchScore).toBe(88);
+    // Final fix pass spec: an unverifiable requirement is neither a pass nor a
+    // fail, so it is excluded from the score entirely. 3 matched / 3 decidable.
+    expect(result.matchScore).toBe(100);
     expect(result.unknown[0].kind).toBe("gpa");
     // The profile has no GPA column — nothing is invented
     expect(result.unknown[0].detail).toContain("does not guess a grade");
+    // ...and the gpa dimension says so without being counted
+    const gpa = result.dimensions.find((entry) => entry.kind === "gpa");
+    expect(gpa?.state).toBe("NOT_COMPARABLE");
+    expect(gpa?.counted).toBe(false);
+    expect(result.explanation).toContain("NOT counted in the score");
   });
 
   it("returns NOT_ELIGIBLE when a hard requirement fails", () => {
@@ -172,6 +178,51 @@ describe("student match engine", () => {
     for (const check of result.matched) {
       expect(matchedClaims.some((claim) => claim.text === check.source)).toBe(true);
     }
+  });
+
+  it("lists every profile dimension, stating which ones the content covered", () => {
+    // Final fix pass spec: the student must see what was and was not assessed.
+    const result = calculateStudentMatch({ profile: STUDENT, claims: matchedClaims });
+    const byKind = new Map(result.dimensions.map((entry) => [entry.kind, entry]));
+
+    // country / age / skills were stated and matched
+    expect(byKind.get("country")).toMatchObject({ state: "SATISFIED", counted: true });
+    expect(byKind.get("age")).toMatchObject({ state: "SATISFIED", counted: true });
+    expect(byKind.get("skills")).toMatchObject({ state: "SATISFIED", counted: true });
+
+    // nothing stated a field-of-study requirement
+    expect(byKind.get("field")).toMatchObject({ state: "NOT_STATED", counted: false });
+    expect(byKind.get("field")?.detail).toContain("No field-of-study requirement");
+    expect(byKind.get("field")?.source).toBeNull();
+
+    // a dimension never stated must not be able to move the number
+    expect(result.dimensions.filter((entry) => entry.counted)).toHaveLength(3);
+    expect(result.matchScore).toBe(100);
+  });
+
+  it("never counts unstated dimensions when requirements partially fail", () => {
+    const result = calculateStudentMatch({
+      profile: { ...STUDENT, age: 27 },
+      claims: [
+        { id: "c1", type: "eligibility", text: "Open to Pakistani students only" },
+        { id: "c5", type: "eligibility", text: "Applicants must be under 25 years old" },
+      ],
+    });
+
+    const byKind = new Map(result.dimensions.map((entry) => [entry.kind, entry]));
+    expect(byKind.get("age")).toMatchObject({ state: "NOT_SATISFIED", counted: true });
+    expect(byKind.get("education")?.state).toBe("NOT_STATED");
+    // 1 of 1 decidable requirement matched
+    expect(result.matchScore).toBe(50);
+    expect(result.result).toBe("NOT_ELIGIBLE");
+  });
+
+  it("reports no deadline dimension — timing is presented separately", () => {
+    const result = calculateStudentMatch({
+      profile: STUDENT,
+      claims: [{ id: "cd3", type: "deadline", text: "Apply by 31 Dec 2026" }],
+    });
+    expect(result.dimensions.map((entry) => entry.kind)).not.toContain("deadline");
   });
 });
 

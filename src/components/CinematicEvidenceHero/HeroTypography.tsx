@@ -82,11 +82,14 @@ export function HeroTypography({ values, navigate }: { values: HeroScrollValues;
 
   return (
     <div className="relative z-30 w-full max-w-[640px]">
-      {/* ── Text phases (stacked, scroll-driven, swapped in place) ── */}
-      <div className="relative min-h-[220px] sm:min-h-[280px]">
+      {/* ── Text phases (stacked, scroll-driven, swapped in place) ─────────────
+           Phase 1 is in flow and sizes the block; the phases after it swap over it.
+           A fixed min-height used to reserve the space instead, which left a band of
+           empty stage between the headline and its supporting line at every size. */}
+      <div className="relative">
 
         {/* PHASE 1: INFORMATION IS EVERYWHERE / CONFIDENCE ISN'T */}
-        <motion.div style={{ opacity: ph1, y: ph1y }} className="absolute inset-x-0 top-0">
+        <motion.div style={{ opacity: ph1, y: ph1y }} className="relative">
           <div className="mb-6 flex items-center gap-3">
             <div className="h-px w-8 bg-violet" />
             <motion.div className="font-mono text-xs text-violet" style={{ letterSpacing }}>
@@ -98,6 +101,9 @@ export function HeroTypography({ values, navigate }: { values: HeroScrollValues;
             <MaskedLine delay={0.58} className="italic text-lime">ISN'T.</MaskedLine>
           </h1>
         </motion.div>
+
+        {/* The phases after the first swap over it in place, from its top edge. */}
+        <div className="absolute inset-x-0 top-0">
 
         {/* PHASE 2: ONE POST IS A CLAIM — Instagram in focus */}
         <motion.div style={{ opacity: ph2, y: ph2y }} className="absolute inset-x-0 top-0">
@@ -146,12 +152,13 @@ export function HeroTypography({ values, navigate }: { values: HeroScrollValues;
             INVESTIGATE<br />BEFORE YOU <span className="italic text-lime">ACT.</span>
           </h2>
         </motion.div>
+        </div>
       </div>
 
-      {/* ── Description (phase 1 only — hidden on small mobile to save height) ── */}
+      {/* ── Description (phase 1 only) ── */}
       <motion.p
         style={{ opacity: descOpacity }}
-        className="mt-6 hidden max-w-md font-mono text-sm leading-7 text-soft sm:mt-8 sm:block md:text-base"
+        className="mt-6 max-w-md font-mono text-sm leading-7 text-soft sm:mt-8 md:text-base"
       >
         Trustlify investigates online opportunities, links, posts, screenshots and claims
         against real evidence before you click, apply, pay, or share personal information.

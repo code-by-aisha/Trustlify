@@ -60,13 +60,43 @@ export type EligibilityResult =
   | "NOT_ELIGIBLE"
   | "INSUFFICIENT_DATA";
 
+/**
+ * Where a single profile dimension stands after reading this content.
+ *
+ * The two NOT_ states are the honest ones: a dimension the opportunity never
+ * mentioned (NOT_STATED) and a dimension it mentioned but whose requirement
+ * cannot be weighed against a stored profile fact (NOT_COMPARABLE). Neither is
+ * a pass and neither is a fail, so neither touches `matchScore`.
+ */
+export type DimensionState =
+  | "SATISFIED"
+  | "NOT_SATISFIED"
+  | "NOT_STATED"
+  | "NOT_COMPARABLE";
+
+export interface DimensionStatus {
+  kind: RequirementKind;
+  state: DimensionState;
+  /** True ONLY when this dimension contributed to `matchScore`. */
+  counted: boolean;
+  /** The claim text it was weighed against, or null when nothing stated it. */
+  source: string | null;
+  detail: string;
+}
+
 export interface StudentMatchResult {
   result: EligibilityResult;
-  /** 0–100, or null when nothing could be checked (no false precision). */
+  /**
+   * 0–100 over the requirements that could actually be compared, or null when
+   * none could (no false precision). An unstated or unverifiable requirement is
+   * never scored in either direction.
+   */
   matchScore: number | null;
   matched: RequirementCheck[];
   missing: RequirementCheck[];
   unknown: RequirementCheck[];
+  /** One entry per profile dimension, so the student sees what was assessed. */
+  dimensions: DimensionStatus[];
   explanation: string;
 }
 
@@ -114,17 +144,94 @@ export interface RequirementClaim {
 /* ─── Determination of the score ──────────────────────────────────────────── */
 
 /**
- * matchScore = 100 · (matched + 0.5 · unknown) / total checks.
+ * matchScore = 100 · matched / (matched + missing), over the checks that
+ * actually compared a profile fact with a stated requirement.
  *
- * An unknown check earns half credit: it is neither satisfied nor failed, so
- * the score must not pretend it is either. The label comes from the
- * matched/missing facts, never from the number, so the two can't contradict.
+ * An UNKNOWN check earns nothing and costs nothing. Half credit was removed:
+ * it silently manufactured a percentage out of the absence of information, so
+ * a student with three matches and one unreadable requirement saw 88% and read
+ * it as a 12% failure they never caused. Unverifiable requirements are listed
+ * separately as `dimensions` entries with `counted: false` instead.
+ *
+ * Returns null when nothing was decidable — no number is invented.
  */
 function scoreOf(checks: RequirementCheck[]): number | null {
-  if (checks.length === 0) return null;
   const matched = checks.filter((check) => check.outcome === "MATCHED").length;
-  const unknown = checks.filter((check) => check.outcome === "UNKNOWN").length;
-  return Math.round((100 * (matched + 0.5 * unknown)) / checks.length);
+  const missing = checks.filter((check) => check.outcome === "MISSING").length;
+  const decidable = matched + missing;
+  if (decidable === 0) return null;
+  return Math.round((100 * matched) / decidable);
+}
+
+/* ─── Per-dimension breakdown (explanation only, never scored) ────────────── */
+
+/**
+ * Dimensions the student can actually read as their own profile fields, in the
+ * order they are shown. `deadline` is excluded on purpose: it is presented as
+ * TIMING, not as eligibility, and the score already ignores it.
+ */
+export const MATCH_DIMENSIONS: readonly Exclude<RequirementKind, "deadline">[] = [
+  "education",
+  "field",
+  "country",
+  "skills",
+  "age",
+  "experience",
+  "language",
+  "gpa",
+];
+
+/** Lowercase words for the "nothing was stated here" sentence. */
+const DIMENSION_WORD: Record<Exclude<RequirementKind, "deadline">, string> = {
+  education: "education-level",
+  field: "field-of-study",
+  country: "country",
+  skills: "skills",
+  age: "age",
+  experience: "experience",
+  language: "language",
+  gpa: "GPA / marks",
+};
+
+/**
+ * One entry per dimension from the checks already produced. Purely a
+ * presentation of what the comparison did and did not cover — it cannot change
+ * the verdict or the score.
+ */
+function buildDimensions(
+  checks: RequirementCheck[],
+): DimensionStatus[] {
+  return MATCH_DIMENSIONS.map((kind) => {
+    const forKind = checks.filter((check) => check.kind === kind);
+
+    if (forKind.length === 0) {
+      return {
+        kind,
+        state: "NOT_STATED" as const,
+        counted: false,
+        source: null,
+        detail: `No ${DIMENSION_WORD[kind]} requirement is stated in this content, so it was not scored either way.`,
+      };
+    }
+
+    const failed = forKind.find((check) => check.outcome === "MISSING");
+    const met = forKind.find((check) => check.outcome === "MATCHED");
+    const source = truncate(failed?.source ?? met?.source ?? forKind[0].source, 160);
+
+    if (failed) {
+      return { kind, state: "NOT_SATISFIED" as const, counted: true, source, detail: failed.detail };
+    }
+    if (met) {
+      return { kind, state: "SATISFIED" as const, counted: true, source, detail: met.detail };
+    }
+    return {
+      kind,
+      state: "NOT_COMPARABLE" as const,
+      counted: false,
+      source,
+      detail: forKind[0].detail,
+    };
+  });
 }
 
 /* ─── Vocabulary (curated, deterministic) ─────────────────────────────────── */
@@ -848,6 +955,7 @@ export function calculateStudentMatch(input: StudentMatchInput): StudentMatchRes
     matched,
     missing,
     unknown,
+    dimensions: buildDimensions(comparable),
     explanation: buildExplanation(result, matchScore, matched, missing, unknown, comparable),
   };
 }
@@ -866,10 +974,13 @@ function buildExplanation(
   comparable: RequirementCheck[],
 ): string {
   const total = matched.length + missing.length + unknown.length;
+  // The score denominator is only what a real comparison could decide.
+  const decidable = comparable.filter((check) => check.outcome !== "UNKNOWN").length;
+  const notCounted = comparable.filter((check) => check.outcome === "UNKNOWN");
   const scoreLabel =
     matchScore === null
       ? "no requirement in this content could be checked against your profile"
-      : `${matchScore}% of ${comparable.length} comparable requirement${comparable.length === 1 ? "" : "s"} counted in your favour`;
+      : `${matchScore}% of ${decidable} comparable requirement${decidable === 1 ? "" : "s"} counted in your favour`;
 
   const lines: string[] = [];
 
@@ -879,7 +990,7 @@ function buildExplanation(
     );
   } else if (result === "PARTIALLY_ELIGIBLE") {
     lines.push(
-      `Your profile matched ${comparable.filter((c) => c.outcome === "MATCHED").length} of ${comparable.length} comparable requirement(s) and nothing found so far rules you out (${scoreLabel}).`,
+      `Your profile matched ${comparable.filter((c) => c.outcome === "MATCHED").length} of ${decidable} comparable requirement(s) and nothing found so far rules you out (${scoreLabel}).`,
     );
     if (missing.length > 0) {
       lines.push(`Not satisfied: ${[...new Set(missing.map((check) => check.kind))].join(", ")}.`);
@@ -904,7 +1015,14 @@ function buildExplanation(
 
   if (unknown.length > 0 && result !== "INSUFFICIENT_DATA") {
     lines.push(
-      `Could not be verified: ${[...new Set(unknown.map((check) => check.kind))].join(", ")}.`,
+      `Could not be verified and NOT counted in the score: ${[...new Set(unknown.map((check) => check.kind))].join(", ")}.`,
+    );
+  }
+  // Anything the content never mentioned is said so explicitly, otherwise the
+  // student reads an absent row as a hidden failure.
+  if (notCounted.length === 0 && result !== "INSUFFICIENT_DATA") {
+    lines.push(
+      "Every requirement this content stated could be compared directly with your profile.",
     );
   }
   lines.push(

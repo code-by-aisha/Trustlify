@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { AppShell } from '@/components/AppShell'
 import { Button } from '@/components/ui'
+import { SkillSelector } from '@/components/SkillSelector'
+import { SKILL_CATALOGUE } from '@/data/skillCatalogue'
 import { useUserProfile } from '@/hooks/useUserProfile'
 import { useAuth } from '@/hooks/useAuth'
 
@@ -48,6 +50,14 @@ export default function Settings() {
     country: '', educationLevel: '', fieldOfStudy: '', portfolio: '',
   })
 
+  /* Skills are edited with the same selector onboarding uses, so a returning
+     student can change them without repeating the wizard. */
+  const [skills, setSkills] = useState<string[]>(profile.skills || [])
+
+  useEffect(() => {
+    setSkills(profile.skills || [])
+  }, [profile.skills])
+
   useEffect(() => {
     setFields({
       name: profile.name || profile.displayName || '',
@@ -76,6 +86,7 @@ export default function Settings() {
       fieldOfStudy: fields.fieldOfStudy || null,
       portfolioUrl: fields.portfolio || null,
       age: fields.age ? Number(fields.age) : null,
+      skills,
     }
     // An explicit pick wins. Left empty, the backend derives the level from the
     // qualification text in the same request.
@@ -186,16 +197,20 @@ export default function Settings() {
                       fetcher it uses for sources (no logins, no private pages), treats it as
                       untrusted text, and never overwrites the fields above with it.
                     </div>
-                    {profile.skills && profile.skills.length > 0 && (
-                      <div className="mt-4">
-                        <label className="font-mono text-[9px] text-dim tracking-wider block mb-1">SKILLS</label>
-                        <div className="flex flex-wrap gap-2">
-                          {profile.skills.map((s) => (
-                            <span key={s} className="px-3 py-1 rounded-full border border-[rgba(124,58,237,0.3)] bg-[rgba(124,58,237,0.08)] font-mono text-xs text-bone">{s}</span>
-                          ))}
-                        </div>
+                    <div className="mt-5">
+                      <label className="font-mono text-[9px] text-dim tracking-wider block mb-2">SKILLS</label>
+                      <SkillSelector
+                        value={skills}
+                        onChange={setSkills}
+                        catalogue={SKILL_CATALOGUE}
+                        accent="violet"
+                      />
+                      <div className="mt-3 font-mono text-[10px] text-dim leading-relaxed">
+                        Skills you type yourself are saved exactly like the presets. Nothing here is
+                        treated as a certificate — a skill only matters when an opportunity actually
+                        states one as a requirement.
                       </div>
-                    )}
+                    </div>
                     <div className="mt-6 flex items-center gap-4">
                       <Button variant="violet" size="sm" onClick={handleSave}>SAVE CHANGES</Button>
                       {saveMsg && (

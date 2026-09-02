@@ -26,9 +26,9 @@ function Reveal({ children, className = '', delay = 0 }: { children: React.React
 function ProblemSection() {
   const steps = ['POST', 'SEARCH', 'OFFICIAL WEBSITE', 'ANOTHER SOURCE', 'DEADLINE', 'ELIGIBILITY', 'REVIEWS', 'DECISION']
   return (
-    <section id="problem" className="py-32 border-t border-white/[0.06]">
+    <section id="problem" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
           <Reveal>
             <SectionLabel>THE PROBLEM</SectionLabel>
             <h2 className="font-display leading-tight mb-6" style={{ fontSize: 'clamp(36px,4vw,60px)', fontWeight: 300 }}>
@@ -102,7 +102,7 @@ function HowItWorks() {
   ]
 
   return (
-    <section ref={sectionRef} id="how-it-works" className="py-32 border-t border-white/[0.06]">
+    <section ref={sectionRef} id="how-it-works" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         <Reveal>
           <SectionLabel>HOW TRUSTLIFY WORKS</SectionLabel>
@@ -227,9 +227,9 @@ function EvidenceEngine() {
     { label: 'VERIFICATION', color: 'border-[rgba(163,255,18,0.6)] text-lime', bg: 'bg-[rgba(163,255,18,0.08)]' },
   ]
   return (
-    <section id="evidence-engine" className="py-32 border-t border-white/[0.06]">
+    <section id="evidence-engine" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-start">
           <Reveal>
             <SectionLabel>EVIDENCE ENGINE</SectionLabel>
             <h2 className="font-display mb-6 leading-tight" style={{ fontSize: 'clamp(32px,3.5vw,54px)', fontWeight: 300 }}>
@@ -297,9 +297,9 @@ function StudentIntelligence() {
     { label: 'Relevance', status: '✓', color: 'text-lime', note: 'STEM field match' },
   ]
   return (
-    <section id="for-students" className="py-32 border-t border-white/[0.06]">
+    <section id="for-students" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
           <Reveal>
             <div className="card-noir-violet p-8 max-w-sm">
               <div className="font-mono text-[10px] tracking-widest text-dim mb-4">DEMO — STUDENT PROFILE MATCH</div>
@@ -347,7 +347,7 @@ function CurrentnessSection() {
     { label: 'Current Status', date: 'Aug 22, 2025', note: 'EXPIRED', color: 'bg-danger' },
   ]
   return (
-    <section className="py-32 border-t border-white/[0.06]">
+    <section className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         <Reveal>
           <SectionLabel>CURRENTNESS</SectionLabel>
@@ -407,9 +407,9 @@ function RiskActionSection() {
     { text: 'Save this investigation and set a monitoring alert.', type: 'secondary' as const },
   ]
   return (
-    <section className="py-32 border-t border-white/[0.06]">
+    <section className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-start">
           <Reveal>
             <SectionLabel>RISK + ACTION</SectionLabel>
             <h2 className="font-display mb-6 leading-tight" style={{ fontSize: 'clamp(32px,3.5vw,54px)', fontWeight: 300 }}>
@@ -444,9 +444,9 @@ function RiskActionSection() {
 
 function PrivacySection() {
   return (
-    <section className="py-32 border-t border-white/[0.06]">
+    <section className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center">
           <Reveal>
             <SectionLabel>PRIVACY</SectionLabel>
             <h2 className="font-display mb-6 leading-tight" style={{ fontSize: 'clamp(32px,3.5vw,54px)', fontWeight: 300 }}>
@@ -495,7 +495,7 @@ function LocalContextSection() {
     { lang: 'Sindhi*', example: 'ڇا هي اسڪالرشپ اصلي آهي؟', active: false },
   ]
   return (
-    <section className="py-32 border-t border-white/[0.06]">
+    <section className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         <Reveal>
           <SectionLabel>LOCAL CONTEXT</SectionLabel>
@@ -543,7 +543,7 @@ function ImpactSection() {
     { value: '<18s', label: 'average Trustlify investigation time' },
   ]
   return (
-    <section className="py-32 border-t border-white/[0.06]">
+    <section className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         <Reveal>
           <SectionLabel>IMPACT</SectionLabel>
@@ -570,7 +570,7 @@ function ImpactSection() {
 
 function WhyTrustlify() {
   return (
-    <section id="why-trustlify" className="py-32 border-t border-white/[0.06]">
+    <section id="why-trustlify" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         <Reveal>
           <SectionLabel>WHY TRUSTLIFY</SectionLabel>
@@ -646,10 +646,10 @@ function AboutSection() {
   ]
 
   return (
-    <section id="about" className="py-32 border-t border-white/[0.06]">
+    <section id="about" className="py-20 md:py-32 border-t border-white/[0.06]">
       <div className="max-w-7xl mx-auto px-6">
         {/* ── Editorial motion statement ── */}
-        <div ref={statementRef} className="mb-24 py-16">
+        <div ref={statementRef} className="mb-14 md:mb-24 py-10 md:py-16">
           <div className="max-w-4xl">
             <motion.div style={{ y: line1Y, opacity: line1Opacity }}>
               <h2 className="font-display leading-[0.92]" style={{ fontSize: 'clamp(40px,5.5vw,80px)', fontWeight: 300 }}>
@@ -672,7 +672,7 @@ function AboutSection() {
         </div>
 
         {/* ── Existing content ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-16">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-16">
           <Reveal className="lg:col-span-5">
             <SectionLabel>ABOUT</SectionLabel>
             <h2 className="font-display mb-6" style={{ fontSize: 'clamp(32px,3.5vw,54px)', fontWeight: 300 }}>
@@ -699,7 +699,7 @@ function AboutSection() {
 
 function FinalCTA({ navigate }: { navigate: (path: string) => void }) {
   return (
-    <section className="py-40 border-t border-white/[0.06] relative overflow-hidden">
+    <section className="py-24 md:py-40 border-t border-white/[0.06] relative overflow-hidden">
       <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 60% at 50% 100%, rgba(124,58,237,0.12) 0%, transparent 70%)' }} />
       <div className="max-w-4xl mx-auto px-6 text-center relative">
         <Reveal>
@@ -708,7 +708,15 @@ function FinalCTA({ navigate }: { navigate: (path: string) => void }) {
             INVESTIGATE IT.
           </h2>
           <p className="font-mono text-sm text-soft mb-10 max-w-md mx-auto">One claim. Multiple sources. One accountable decision.</p>
-          <Button variant="lime" size="lg" onClick={() => navigate('/investigate')}>
+          {/* On mobile the button renders at md (px-6 py-3 text-sm); from 640px
+              up the sm-prefixed utilities override to lg values so the desktop
+              presentation is unchanged. */}
+          <Button
+            variant="lime"
+            size="md"
+            className="sm:px-8 sm:py-4 sm:text-base"
+            onClick={() => navigate('/investigate')}
+          >
             INVESTIGATE SOMETHING →
           </Button>
         </Reveal>
@@ -719,15 +727,85 @@ function FinalCTA({ navigate }: { navigate: (path: string) => void }) {
 
 /* ─── FOOTER ─────────────────────────────────────────────────────────────── */
 
+/**
+ * Content rules honored here:
+ *   - Every link either scrolls to an id that exists on this Landing page
+ *     (how-it-works, evidence-engine, for-students, about) or navigates to a
+ *     route that exists in App.tsx (/auth, /investigate). Protected routes
+ *     redirect unauthenticated visitors to /auth — that is a working
+ *     destination, not a dead link.
+ *   - No invented social handles, addresses, email or phone. The prototype
+ *     note below is the only "contact/help" statement because the product
+ *     currently collects no support channel.
+ */
 function Footer() {
+  const navigate = useNavigate()
+
+  const scrollTo = (id: string) => {
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const linkCls =
+    'text-left font-mono text-xs text-soft hover:text-bone transition-colors cursor-pointer inline-flex items-center gap-1.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet focus-visible:ring-offset-2 focus-visible:ring-offset-void rounded'
+
   return (
-    <footer className="border-t border-white/[0.06] py-12">
-      <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-6">
-        <div className="flex items-center gap-2">
-          <TrustlifyLogo size={5} />
-          <span className="font-mono text-xs text-dim">TRUSTLIFY · Evidence-Driven Investigation</span>
+    <footer className="border-t border-white/[0.06] py-14 md:py-16">
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-10 md:gap-8">
+          {/* Brand column */}
+          <div className="md:col-span-5">
+            <div className="flex items-center gap-2.5 mb-3">
+              <TrustlifyLogo size={5} />
+              <span className="font-mono font-semibold text-sm tracking-wider text-bone">TRUSTLIFY</span>
+            </div>
+            <p className="font-mono text-xs text-soft leading-relaxed max-w-sm">
+              Evidence-driven investigation for opportunities you see online. One claim, multiple sources, one accountable verdict — with the evidence still readable after the decision.
+            </p>
+            <p className="mt-4 font-mono text-[10px] text-dim leading-relaxed max-w-sm">
+              Research prototype. Not production software. No live support channel is provided at this stage.
+            </p>
+          </div>
+
+          {/* Explore — anchor scrolls within this page */}
+          <div className="md:col-span-3">
+            <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Explore</div>
+            <ul className="space-y-2.5">
+              <li><button type="button" onClick={() => scrollTo('how-it-works')} className={linkCls}>How it works</button></li>
+              <li><button type="button" onClick={() => scrollTo('evidence-engine')} className={linkCls}>Evidence engine</button></li>
+              <li><button type="button" onClick={() => scrollTo('for-students')} className={linkCls}>For students</button></li>
+              <li><button type="button" onClick={() => scrollTo('why-trustlify')} className={linkCls}>Why Trustlify</button></li>
+              <li><button type="button" onClick={() => scrollTo('about')} className={linkCls}>About</button></li>
+            </ul>
+          </div>
+
+          {/* Start column — real routes only */}
+          <div className="md:col-span-2">
+            <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Start</div>
+            <ul className="space-y-2.5">
+              <li><button type="button" onClick={() => navigate('/auth')} className={linkCls}>Log in</button></li>
+              <li><button type="button" onClick={() => navigate('/auth')} className={linkCls}>Create account</button></li>
+              <li><button type="button" onClick={() => navigate('/investigate')} className={linkCls}>Investigate →</button></li>
+            </ul>
+          </div>
+
+          {/* What it checks — non-interactive text, honest about scope */}
+          <div className="md:col-span-2">
+            <div className="font-mono text-[10px] tracking-widest text-violet mb-3 uppercase">Every verdict weighs</div>
+            <ul className="space-y-2 font-mono text-[11px] text-dim leading-relaxed">
+              <li>Source authority</li>
+              <li>Cross-source consistency</li>
+              <li>Currentness and deadline</li>
+              <li>Profile fit (for students)</li>
+            </ul>
+          </div>
         </div>
-        <div className="font-mono text-[10px] text-dim">© 2025 Trustlify. Prototype only — not production software.</div>
+
+        <div className="mt-12 pt-6 border-t border-white/[0.06] flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <div className="font-mono text-[10px] text-dim">© 2025 Trustlify · Evidence-Driven Investigation</div>
+          <div className="font-mono text-[10px] text-dim max-w-md leading-relaxed">
+            Verdicts are evidence-based readings, not legal, financial or admission advice.
+          </div>
+        </div>
       </div>
     </footer>
   )

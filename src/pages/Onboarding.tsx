@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui'
 import { TrustlifyLogo } from '@/components/TrustlifyLogo'
+import { SkillSelector } from '@/components/SkillSelector'
+import { INTEREST_CATALOGUE, SKILL_CATALOGUE } from '@/data/skillCatalogue'
 import { useUserProfile } from '@/hooks/useUserProfile'
 
 const steps = [
@@ -58,10 +60,10 @@ export default function Onboarding() {
     })
   }, [profileLoading, profile])
 
-  const skillOptions = ['Python', 'Data Analysis', 'Research', 'Writing', 'Design', 'JavaScript', 'Machine Learning', 'Public Speaking', 'Project Management', 'Excel/Sheets']
-  const interestOptions = ['Scholarships', 'Internships', 'Research Opportunities', 'Hackathons', 'Courses', 'Jobs', 'Fellowships', 'Conferences']
+  // The presets live in one shared catalogue so onboarding and Settings offer
+  // the same list, and a skill added in either place survives the other.
+  const interestOptions = INTEREST_CATALOGUE
 
-  const toggleSkill = (s: string) => setForm(f => ({ ...f, skills: f.skills.includes(s) ? f.skills.filter(x => x !== s) : [...f.skills, s] }))
   const toggleInterest = (s: string) => setForm(f => ({ ...f, interests: f.interests.includes(s) ? f.interests.filter(x => x !== s) : [...f.interests, s] }))
 
   const variants = { initial: { opacity: 0, x: 24 }, animate: { opacity: 1, x: 0 }, exit: { opacity: 0, x: -24 } }
@@ -207,13 +209,14 @@ export default function Onboarding() {
               <motion.div key="s2" {...variants} transition={{ duration: 0.3 }}>
                 <div className="font-mono text-[10px] text-violet tracking-wider mb-2">STEP 03 · SKILLS</div>
                 <h2 className="font-display mb-8" style={{ fontSize: 36, fontWeight: 300 }}>What are you good at?</h2>
-                <div className="flex flex-wrap gap-2 mb-6">
-                  {skillOptions.map((s) => (
-                    <button key={s} onClick={() => toggleSkill(s)}
-                      className={`px-3 py-2 rounded-full border font-mono text-xs transition-all cursor-pointer ${
-                        form.skills.includes(s) ? 'border-violet bg-[rgba(124,58,237,0.15)] text-bone' : 'border-white/10 text-dim hover:border-white/20 hover:text-soft'
-                      }`}>{s}</button>
-                  ))}
+                <p className="font-mono text-xs text-dim mb-4">Pick any that apply, or type your own — the list is a starting point, not a limit.</p>
+                <div className="mb-6">
+                  <SkillSelector
+                    value={form.skills}
+                    onChange={(skills) => setForm(f => ({ ...f, skills }))}
+                    catalogue={SKILL_CATALOGUE}
+                    accent="violet"
+                  />
                 </div>
                 <Field label="EXPERIENCE / PROJECTS (OPTIONAL)">
                   <textarea className={`${inputClass} resize-none`} rows={3} value={form.experience}
@@ -259,11 +262,11 @@ export default function Onboarding() {
                       { label: 'Name', value: form.name || '—' },
                       { label: 'Education', value: form.education || '—' },
                       { label: 'Location', value: form.location || '—' },
-                      { label: 'Skills', value: form.skills.length ? form.skills.slice(0, 3).join(', ') : '—' },
+                      { label: 'Skills', value: form.skills.length ? form.skills.join(', ') : '—' },
                     ].map(f => (
-                      <div key={f.label} className="flex justify-between">
-                        <span className="font-mono text-[10px] text-dim">{f.label}</span>
-                        <span className="font-mono text-[10px] text-soft">{f.value}</span>
+                      <div key={f.label} className="flex justify-between gap-4">
+                        <span className="font-mono text-[10px] text-dim flex-shrink-0">{f.label}</span>
+                        <span className="font-mono text-[10px] text-soft text-right max-w-[75%] leading-relaxed">{f.value}</span>
                       </div>
                     ))}
                   </div>

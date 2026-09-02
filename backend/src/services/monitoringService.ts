@@ -7,6 +7,31 @@
 
 import { supabaseAdmin } from "../config/supabase.js";
 import { AppError } from "../middleware/errorHandler.js";
+import {
+  assessDeadline,
+  type DeadlineClaimInput,
+} from "../engines/currentnessEngine.js";
+
+/**
+ * One meaningful change observed on a monitored investigation.
+ *
+ * ⚠ WHAT THIS CAN HONESTLY COVER. This project has no background worker, no
+ * scheduler and no re-fetch loop, and this module must not pretend otherwise:
+ * it makes no network call to the opportunity's page, so it can never lawfully
+ * report that a page's *content* changed. What it can report is a change that
+ * the already-persisted evidence proves on its own — the recorded application
+ * window closing while the item was being monitored. That is assessed with the
+ * same deterministic deadline engine the result page uses, over the same stored
+ * claims, at two different clocks. No snapshot, no guess, no invented event.
+ */
+export interface MonitoringChange {
+  field: "deadline_state";
+  /** The recorded window when monitoring started. */
+  before: string;
+  /** The same recorded window read at the current time. */
+  after: string;
+  detail: string;
+}
 
 /**
  * Start monitoring a completed investigation.
@@ -70,7 +95,8 @@ export async function startMonitoring(
 }
 
 /**
- * Get all monitoring items for a user.
+ * Get all monitoring items for a user, each with the changes its own persisted
+ * evidence now proves.
  */
 export async function getMonitoringItems(userId: string) {
   const { data, error } = await supabaseAdmin
@@ -83,7 +109,75 @@ export async function getMonitoringItems(userId: string) {
     throw new AppError(500, "MONITORING_LIST_FAILED", "Failed to list monitoring items");
   }
 
-  return (data ?? []).map(mapMonitoringRow);
+  const rows = (data ?? []) as MonitoringRow[];
+  if (rows.length === 0) return [];
+
+  const claims = await loadClaims(rows.map((row) => row.investigation_id));
+
+  return rows.map((row) => ({
+    ...mapMonitoringRow(row),
+    changes: detectChanges(row, claims.get(row.investigation_id) ?? []),
+  }));
+}
+
+/**
+ * Every claim of the monitored investigations, grouped per investigation.
+ * The deadline engine filters these itself (by claim type and by date
+ * phrasing), so nothing is pre-narrowed here and the reading stays identical to
+ * the one on the investigation's own result page.
+ */
+async function loadClaims(
+  investigationIds: string[],
+): Promise<Map<string, DeadlineClaimInput[]>> {
+  const grouped = new Map<string, DeadlineClaimInput[]>();
+  const unique = [...new Set(investigationIds.filter(Boolean))];
+  if (unique.length === 0) return grouped;
+
+  const { data, error } = await supabaseAdmin
+    .from("claims")
+    .select("id, investigation_id, claim_text, claim_type")
+    .in("investigation_id", unique);
+
+  // A missing column or an unreachable table must never break the list — an
+  // item with no readable evidence simply reports no changes.
+  if (error || !data) return grouped;
+
+  for (const row of data as ClaimRow[]) {
+    const list = grouped.get(row.investigation_id) ?? [];
+    list.push({ id: row.id, text: row.claim_text ?? "", type: row.claim_type ?? "other" });
+    grouped.set(row.investigation_id, list);
+  }
+  return grouped;
+}
+
+/**
+ * The change a monitored item can prove from its own stored claims: the window
+ * was open when monitoring started and is not open now.
+ */
+function detectChanges(
+  row: MonitoringRow,
+  claims: DeadlineClaimInput[],
+): MonitoringChange[] {
+  if (claims.length === 0) return [];
+
+  const startedAt = new Date(row.created_at);
+  if (Number.isNaN(startedAt.getTime())) return [];
+  const now = new Date();
+  // Monitoring started in the future (clock skew) — say nothing.
+  if (startedAt.getTime() > now.getTime()) return [];
+
+  const atStart = assessDeadline(claims, startedAt);
+  const current = assessDeadline(claims, now);
+  if (atStart.state === current.state) return [];
+
+  return [
+    {
+      field: "deadline_state",
+      before: atStart.state,
+      after: current.state,
+      detail: current.detail,
+    },
+  ];
 }
 
 /**
@@ -116,6 +210,13 @@ interface MonitoringRow {
   active: boolean;
   last_checked_at: string | null;
   created_at: string;
+}
+
+interface ClaimRow {
+  id: string;
+  investigation_id: string;
+  claim_text: string;
+  claim_type: string;
 }
 
 function mapMonitoringRow(row: MonitoringRow) {

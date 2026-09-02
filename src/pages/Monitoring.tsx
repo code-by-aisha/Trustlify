@@ -11,6 +11,12 @@ interface MonitoringItem {
   active: boolean
   lastCheckedAt: string | null
   createdAt: string
+  /**
+   * A change this investigation's own persisted evidence proves — today the
+   * recorded application window moving between states while it was monitored.
+   * Absent on items whose evidence cannot be read.
+   */
+  changes?: { field: string; before: string; after: string; detail: string }[]
 }
 
 const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5 } }
@@ -58,6 +64,12 @@ export default function Monitoring() {
               <h1 className="font-display" style={{ fontSize: 'clamp(28px,4vw,44px)', fontWeight: 300 }}>
                 Monitoring <span className="text-violet">{activeCount}</span> Opportunities
               </h1>
+              <p className="mt-3 max-w-xl font-mono text-[10px] leading-relaxed text-dim">
+                Each check re-reads this investigation’s own recorded deadline against the current
+                date and reports a change only when that evidence really moved. Trustlify has no
+                background worker deployed, so nothing is re-fetched from the source page and no
+                alert is sent on its own — open this page to run the check.
+              </p>
             </div>
           </motion.div>
 
@@ -76,7 +88,8 @@ export default function Monitoring() {
               </div>
               <div className="font-mono text-sm text-bone mb-2">No monitoring items yet</div>
               <div className="font-mono text-xs text-dim mb-6 max-w-xs mx-auto">
-                After completing an investigation, you can enable monitoring to track changes in deadlines, requirements, and more.
+                After completing an investigation, press SAVE &amp; MONITOR on its result page to
+                keep it here and re-check its recorded deadline.
               </div>
               <Button variant="lime" size="sm" onClick={() => navigate('/investigate')}>START AN INVESTIGATION →</Button>
             </div>
@@ -90,8 +103,13 @@ export default function Monitoring() {
                       <div className="font-display text-base mb-0.5" style={{ fontWeight: 300 }}>Investigation</div>
                       <div className="font-mono text-[10px] text-dim">{item.investigationId}</div>
                     </div>
-                    <button onClick={() => toggleMonitoring(item.id)}
-                      className={`relative w-10 h-5 rounded-full transition-all cursor-pointer flex-shrink-0 ${item.active ? 'bg-violet' : 'bg-white/10'}`}>
+                    <button
+                      onClick={() => toggleMonitoring(item.id)}
+                      role="switch"
+                      aria-checked={item.active}
+                      aria-label={item.active ? 'Pause monitoring for this investigation' : 'Resume monitoring for this investigation'}
+                      className={`relative w-10 h-5 rounded-full transition-all cursor-pointer flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet focus-visible:ring-offset-2 focus-visible:ring-offset-void ${item.active ? 'bg-violet' : 'bg-white/10'}`}
+                    >
                       <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${item.active ? 'left-5' : 'left-0.5'}`} />
                     </button>
                   </div>
@@ -118,6 +136,25 @@ export default function Monitoring() {
                       </span>
                     </div>
                   </div>
+
+                  {/*
+                   * Only a real, evidenced change appears here. An item whose
+                   * recorded deadline has not moved shows nothing at all —
+                   * “no change yet” is never written as a reassurance line.
+                   */}
+                  {item.active && item.changes && item.changes.length > 0 && (
+                    <div className="mt-4 rounded-xl border border-caution/25 bg-[rgba(245,185,66,0.06)] p-3">
+                      <div className="font-mono text-[9px] tracking-wider text-caution mb-1">
+                        CHANGE DETECTED IN THE RECORDED DEADLINE
+                      </div>
+                      {item.changes.map((change, j) => (
+                        <div key={`${change.field}-${j}`} className="font-mono text-[10px] leading-relaxed text-soft">
+                          {change.field.replace(/_/g, ' ').toUpperCase()}: {change.before} → {change.after}
+                          {' '}— {change.detail}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <button onClick={() => navigate(`/investigation/${item.investigationId}`)}
                     className="mt-4 font-mono text-[10px] text-violet hover:text-[#A855F7] cursor-pointer">

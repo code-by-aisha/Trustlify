@@ -307,3 +307,40 @@ describe("matcher reading structured profile fields", () => {
     expect(result.matched[0].detail).toContain("not an assumption");
   });
 });
+
+/* ─── 6. Skill / interest list normalisation (fix pass part 1) ────────────── */
+
+describe("skill catalogue persistence", () => {
+  it("collapses case and spacing variants of the same skill", () => {
+    const parsed = updateProfileSchema.parse({
+      skills: ["Python", "python", "  PYTHON  ", "Data Analysis"],
+    });
+    expect(parsed.skills).toEqual(["Python", "Data Analysis"]);
+  });
+
+  it("keeps the first spelling the student chose", () => {
+    const parsed = updateProfileSchema.parse({ skills: ["machine learning", "Machine Learning"] });
+    expect(parsed.skills).toEqual(["machine learning"]);
+  });
+
+  it("drops blank entries instead of storing an empty skill", () => {
+    const parsed = updateProfileSchema.parse({ skills: ["React", "   ", ""] });
+    expect(parsed.skills).toEqual(["React"]);
+  });
+
+  it("treats a custom skill the same as a preset one", () => {
+    // Nothing in the schema knows about the preset catalogue — a typed skill is
+    // persisted verbatim, which is what makes the wider list safe to offer.
+    const parsed = createProfileSchema.parse({
+      displayName: "Aisha",
+      role: "student",
+      skills: ["Drone Photography"],
+    });
+    expect(parsed.skills).toEqual(["Drone Photography"]);
+  });
+
+  it("still rejects more than the stored maximum", () => {
+    const tooMany = Array.from({ length: 51 }, (_, i) => `Skill ${i}`);
+    expect(updateProfileSchema.safeParse({ skills: tooMany }).success).toBe(false);
+  });
+});

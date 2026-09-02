@@ -67,7 +67,8 @@ function AppHeader() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate('/settings')}
-            className="hidden md:flex w-8 h-8 items-center justify-center rounded-full border border-white/10 text-soft hover:text-white hover:border-white/20 transition-all cursor-pointer"
+            aria-label="Open settings"
+            className="hidden md:flex w-8 h-8 items-center justify-center rounded-full border border-white/10 text-soft hover:text-white hover:border-white/20 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet focus-visible:ring-offset-2 focus-visible:ring-offset-void"
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.2" />
@@ -79,8 +80,9 @@ function AppHeader() {
           </Button>
           <button
             onClick={() => setMenuOpen(!menuOpen)}
-            className="md:hidden text-soft cursor-pointer"
-            aria-label="Toggle menu"
+            className="md:hidden text-soft cursor-pointer p-1.5 -mr-1 rounded-lg hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet"
+            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen}
           >
             <div className="w-5 space-y-1">
               <div className="h-px bg-current" />
@@ -163,19 +165,22 @@ export function MarketingHeader() {
           ))}
         </nav>
 
-        {/* Right actions */}
+        {/* Right actions.
+            On phone-width screens (<640px) the auth CTAs use the new `xs`
+            size — same font-mono/rounded-full identity as `sm` on desktop,
+            but shorter padding and 10px label so they do not dominate the
+            56px-tall header. Above `sm` they render identically to before. */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* CTA buttons — hide secondary on very small screens */}
-          <Button variant="outline" size="sm" onClick={() => navigate('/auth')} className="hidden sm:inline-flex">
+          <Button variant="outline" size="xs" onClick={() => navigate('/auth')} className="hidden sm:inline-flex">
             LOG IN
           </Button>
-          <Button variant="lime" size="sm" onClick={() => navigate('/investigate')}>
+          <Button variant="lime" size="xs" onClick={() => navigate('/investigate')}>
             INVESTIGATE NOW
           </Button>
           {/* Hamburger — visible below 1024px */}
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            className="lg:hidden text-soft cursor-pointer p-1.5 -mr-1 rounded-lg hover:bg-white/[0.04] transition-colors"
+            className="lg:hidden text-soft cursor-pointer p-1.5 -mr-1 rounded-lg hover:bg-white/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet transition-colors"
             aria-label={menuOpen ? 'Close menu' : 'Open menu'}
             aria-expanded={menuOpen}
           >

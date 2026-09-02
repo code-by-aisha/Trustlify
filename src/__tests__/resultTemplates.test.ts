@@ -12,6 +12,7 @@ import {
   SECTION_LABELS,
   currencyLabel,
   deadlineLabel,
+  dimensionRows,
   eligibilityLabel,
   isRomanUrdu,
   outcomeLabel,
@@ -22,6 +23,7 @@ import {
 } from '@/i18n/resultTemplates'
 import type {
   DeadlineState,
+  DimensionStatus,
   EligibilityResult,
   OpportunityCurrencyState,
   RequirementKind,
@@ -232,5 +234,62 @@ describe('translation scope', () => {
     expect(typeof verdictSentence('VERIFIED')).toBe('string')
     expect(typeof sectionLabel('currentness', true)).toBe('string')
     expect(Array.isArray(romanUrduBrief(STUDENT_BRIEF))).toBe(true)
+  })
+})
+
+/* ─── Match breakdown rows: what was and was not assessed ─────────────────── */
+
+describe('dimensionRows', () => {
+  const ROWS: DimensionStatus[] = [
+    {
+      kind: 'education',
+      state: 'NOT_SATISFIED',
+      counted: true,
+      source: 'Applicants must hold a bachelor degree',
+      detail: 'The opportunity requires Bachelor; your profile is College.',
+    },
+    {
+      kind: 'field',
+      state: 'NOT_STATED',
+      counted: false,
+      source: null,
+      detail: 'No field-of-study requirement is stated in this content.',
+    },
+    {
+      kind: 'deadline',
+      state: 'SATISFIED',
+      counted: false,
+      source: 'Apply by 31 Dec 2026',
+      detail: 'The recorded deadline is still in the future.',
+    },
+  ]
+
+  it('renders one row per assessed dimension and never a timing row', () => {
+    const rows = dimensionRows(ROWS, false)
+    expect(rows.map((row) => row.kind)).toEqual(['education', 'field'])
+  })
+
+  it('marks an unstated dimension with ? and keeps it out of the score', () => {
+    const field = dimensionRows(ROWS, false).find((row) => row.kind === 'field')!
+    expect(field.mark).toBe('?')
+    expect(field.counted).toBe(false)
+    expect(field.detail).toContain('not counted in the score')
+    // A genuine failure keeps its ✗ so the two are never confused.
+    const education = dimensionRows(ROWS, false).find((row) => row.kind === 'education')!
+    expect(education.mark).toBe('✗')
+    expect(education.counted).toBe(true)
+  })
+
+  it('translates only its own template line in Roman Urdu', () => {
+    const rows = dimensionRows(ROWS, true)
+    // Fully templated sentence → translated.
+    expect(rows.find((row) => row.kind === 'field')!.detail).toContain('score mein iska hissa nahi')
+    // A line quoting the requirement stays in the engine's own words.
+    expect(rows.find((row) => row.kind === 'education')!.detail).toContain('Bachelor')
+  })
+
+  it('returns nothing for an investigation stored without a breakdown', () => {
+    expect(dimensionRows(undefined, false)).toEqual([])
+    expect(dimensionRows([], false)).toEqual([])
   })
 })

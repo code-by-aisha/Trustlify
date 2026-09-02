@@ -31,6 +31,8 @@ import {
   romanUrduBrief,
   sectionLabel,
   verdictLabel,
+  dimensionRows,
+  type DimensionRow,
 } from '@/i18n/resultTemplates'
 
 const fade = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.5 } }
@@ -166,6 +168,46 @@ const FALLBACK_SECTION_ORDER: IntelligenceSectionKey[] = [
   'actions',
 ]
 
+/**
+ * One row per profile dimension (final fix pass spec): the student sees what
+ * was assessed and what the content simply never stated. The rows are rendered
+ * straight from the engine's own breakdown — nothing is recomputed here, and a
+ * “?” row is marked as not counted so it can never read as a hidden failure.
+ */
+function DimensionTable({ rows, title }: { rows: DimensionRow[]; title: string }) {
+  if (rows.length === 0) return null
+  return (
+    <div className="space-y-2">
+      <div className="font-mono text-[10px] text-dim tracking-wider">{title}</div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {rows.map((row) => (
+          <div
+            key={row.kind}
+            className="flex items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
+          >
+            <span className={`font-mono text-sm ${row.tone} flex-shrink-0 mt-0.5`}>{row.mark}</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="font-mono text-[10px] tracking-wider text-bone">{row.label}</span>
+                <span className={`font-mono text-[9px] ${row.tone}`}>{row.stateLabel}</span>
+                {!row.counted && (
+                  <span className="font-mono text-[9px] text-dim">· NOT IN SCORE</span>
+                )}
+              </div>
+              <div className="mt-1 font-mono text-[10px] leading-relaxed text-soft">{row.detail}</div>
+              {row.source && (
+                <div className="mt-1 font-mono text-[9px] text-dim">
+                  FROM: "{truncate(row.source, 90)}"
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /** ✓ / ✗ / ? lines — each one names the real requirement and the real profile fact. */
 function CheckList({
   checks,
@@ -212,6 +254,10 @@ export default function InvestigationResult() {
   const [similar, setSimilar] = useState<SimilarOpportunitiesResult | null>(null)
   const [similarBusy, setSimilarBusy] = useState(false)
   const [similarError, setSimilarError] = useState<string | null>(null)
+
+  /* SAVE & MONITOR — the persisted record, not a page navigation. */
+  const [monitorState, setMonitorState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [monitorMessage, setMonitorMessage] = useState('')
 
   if (isLoading && !investigation) {
     return (
@@ -275,6 +321,32 @@ export default function InvestigationResult() {
       setSimilarError(err instanceof Error ? err.message : 'Similar opportunities could not be loaded.')
     } finally {
       setSimilarBusy(false)
+    }
+  }
+
+  /**
+   * Store this investigation as a monitoring item and only then say so. The
+   * request is the existing authenticated POST /api/monitoring; the service
+   * re-activates an existing row instead of inserting a second one, so pressing
+   * this twice cannot duplicate the record. Nothing is reported as saved until
+   * the server has confirmed it.
+   */
+  const saveAndMonitor = async () => {
+    if (!id || monitorState === 'saving' || monitorState === 'saved') return
+    setMonitorState('saving')
+    setMonitorMessage('')
+    try {
+      await apiFetch('/api/monitoring', {
+        method: 'POST',
+        body: JSON.stringify({ investigationId: id }),
+      })
+      setMonitorState('saved')
+      setMonitorMessage('Saved. This investigation is now on your Monitoring page.')
+    } catch (err) {
+      setMonitorState('error')
+      setMonitorMessage(
+        err instanceof Error ? err.message : 'Monitoring could not be started. Please try again.',
+      )
     }
   }
 
@@ -402,13 +474,51 @@ export default function InvestigationResult() {
             )}
 
             {/* Actions */}
-            <div className="flex flex-wrap gap-3 mb-8">
+            <div className="flex flex-wrap gap-3 mb-3">
               <Button variant="violet" onClick={() => navigate(`/investigation/${id}/evidence`)}>EVIDENCE GRAPH</Button>
               {!isRunning && !isFailed && (
-                <Button variant="outline" onClick={() => navigate('/monitoring')}>SAVE & MONITOR</Button>
+                <Button
+                  variant="outline"
+                  onClick={saveAndMonitor}
+                  disabled={monitorState === 'saving' || monitorState === 'saved'}
+                >
+                  {monitorState === 'saving'
+                    ? 'SAVING…'
+                    : monitorState === 'saved'
+                      ? 'SAVED ✓'
+                      : 'SAVE & MONITOR'}
+                </Button>
               )}
               <Button variant="outline" onClick={() => navigate('/investigate')}>NEW INVESTIGATION</Button>
             </div>
+
+            {/*
+             * The honest outcome line. It states what was stored and what the
+             * watch actually covers — a page left open is not monitoring, so no
+             * promise of an alert is made here.
+             */}
+            {monitorMessage && (
+              <div
+                className={`mb-6 font-mono text-[10px] leading-relaxed ${
+                  monitorState === 'error' ? 'text-danger' : 'text-lime'
+                }`}
+              >
+                {monitorMessage}
+                {monitorState === 'saved' && (
+                  <>
+                    {' '}Checks compare this investigation’s own recorded deadline with the
+                    current date whenever the Monitoring page is opened; no alert can arrive
+                    before that, because no background worker is deployed.
+                    <button
+                      onClick={() => navigate('/monitoring')}
+                      className="ml-2 text-violet hover:text-[#A855F7] cursor-pointer"
+                    >
+                      OPEN MONITORING →
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
 
             {/* You asked — the question is answered from this run's own outputs */}
             {intel?.question && (
@@ -669,11 +779,37 @@ export default function InvestigationResult() {
                             {match.matchScore}<span className="text-dim text-xl"> /100</span>
                           </div>
                           <ScoreBar score={match.matchScore} color={look.glow} />
+                          {/*
+                           * The score's own basis, stated next to the number: an
+                           * unstated or unverifiable requirement is not counted,
+                           * so a student never reads a lower number as their own
+                           * failure.
+                           */}
+                          {match.dimensions && match.dimensions.length > 0 && (
+                            <div className="mt-2 font-mono text-[9px] text-dim leading-relaxed">
+                              {match.dimensions.filter((d) => d.counted).length} counted ·{' '}
+                              {match.dimensions.filter((d) => !d.counted).length} not counted in the score
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
 
                     <p className="font-mono text-sm text-soft leading-relaxed mb-5">{match.explanation}</p>
+
+                    {/*
+                     * What the comparison actually covered. Only shown when the
+                     * engine sent a breakdown, so investigations stored before
+                     * it existed render exactly as they did before.
+                     */}
+                    {match.dimensions && match.dimensions.length > 0 && (
+                      <div className="mb-5">
+                        <DimensionTable
+                          rows={dimensionRows(match.dimensions, roman)}
+                          title={sectionLabel('dimensionBreakdown', roman)}
+                        />
+                      </div>
+                    )}
 
                     <div className="space-y-5">
                       {/*

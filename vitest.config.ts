@@ -13,6 +13,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    setupFiles: ['src/__tests__/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     // Placeholder values only — the Supabase client is mocked in the tests that
     // touch it, and no test performs a real network call.
