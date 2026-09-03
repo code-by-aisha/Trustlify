@@ -1,0 +1,25 @@
+# VCS / editor
+.git
+.vscode
+.idea
+
+# Dependencies & build output (rebuilt inside the image)
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+
+# Secrets — never send to the build daemon
+**/.env
+**/.env.local
+!**/.env.example
+
+# Images & media — the repo root is full of test screenshots
+**/*.png
+**/*.jpg
+**/*.jpeg
+
+# Tests / docs (not needed in the backend image)
+backend/src/__tests__
+backend/**/*.test.ts
+docs
+designs

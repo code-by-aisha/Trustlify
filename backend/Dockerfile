@@ -1,26 +1,25 @@
 # ==============================================================================
 # Trustlify Backend — Production Dockerfile (optimized for Suga free tier)
 # ==============================================================================
-# 3-stage build keeps the final image lean (~130 MB) — important for the
-# 256 MiB RAM / 1 GB storage limits on Suga's free plan.
-# Suga routes public HTTPS traffic to the target port set on the canvas;
-# this app listens on PORT (default 3000, read via z.coerce in config/env.ts).
-# Secrets are NEVER baked in — they are injected as runtime env vars.
+# Build context = REPO ROOT, Dockerfile = backend/Dockerfile.
+# All host-side COPY paths are therefore prefixed with backend/.
+# Inside the container everything is flattened to /app, so the compile and
+# runtime stages are unchanged.
 # ==============================================================================
 
 # --- Stage 1: Compile TypeScript (needs devDependencies: typescript) ---
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
-COPY tsconfig.json ./
-COPY src ./src
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
 RUN npm run build
 
 # --- Stage 2: Production-only dependencies ---
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # --- Stage 3: Minimal runtime image ---
