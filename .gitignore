@@ -11,3 +11,14 @@ dist/
 
 .DS_Store
 Thumbs.db
+
+# TypeScript incremental-compile cache (build artifact; tsconfig.tsbuildinfo
+# at repo root is still tracked in HEAD and needs a separate housekeeping
+# pass — this rule only prevents NEW *.tsbuildinfo files from being added).
+*.tsbuildinfo
+
+# Browser-test screenshots and DOM dumps that a test pass can drop at the
+# repo root. Anchored to `/` so legitimate product images under src/assets/**
+# and design references under designs/** stay trackable.
+/*.png
+/hero-dom-*.html
