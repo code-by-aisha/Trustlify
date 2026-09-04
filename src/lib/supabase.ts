@@ -6,13 +6,19 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { REQUIRED_ENV, missingRequiredEnv } from '@/lib/env'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
 
+/**
+ * Last-resort guard. `main.tsx` runs `checkStartupEnv()` before loading anything
+ * that imports this module and renders a readable panel instead, so hitting this
+ * throw means startup was bypassed (e.g. a test entry point).
+ */
 if (!supabaseUrl || !supabaseKey) {
   throw new Error(
-    'Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY environment variables'
+    `Missing ${missingRequiredEnv().join(' / ') || REQUIRED_ENV.join(' / ')} — Vite inlines these at build time, so the deployment must be rebuilt after they are set`
   )
 }
 
