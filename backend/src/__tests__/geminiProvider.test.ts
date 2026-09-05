@@ -6,12 +6,15 @@
  * the live smoke test is a separate script (npm run smoke:gemini).
  */
 
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GeminiProvider,
   extractClaimsResponseSchema,
   parseGeminiResponseBody,
   mapGeminiHttpError,
+  describeGeminiTransportFailure,
+  isTransientGeminiError,
+  MAX_GEMINI_REQUEST_ATTEMPTS,
   buildExtractClaimsPrompt,
 } from "../ai/GeminiProvider.js";
 import { AIError } from "../ai/errors.js";
@@ -50,6 +53,21 @@ const validApiResponse = {
   },
   modelVersion: "models/gemini-2.5-flash",
 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function apiResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function retryProvider() {
+  return new GeminiProvider({ apiKey: "test-key", retryDelayMs: 0 });
+}
 
 /* ─── Zod schema ──────────────────────────────────────────────────────────── */
 
@@ -247,6 +265,115 @@ describe("mapGeminiHttpError", () => {
     });
     expect(err.message).not.toContain("generativelanguage");
     expect(err.message).not.toContain("key=");
+  });
+});
+
+describe("describeGeminiTransportFailure", () => {
+  it("classifies timeout and abort failures without exposing transport details", () => {
+    const timeout = Object.assign(new Error("socket 10.0.0.1 timed out"), {
+      name: "TimeoutError",
+    });
+    expect(describeGeminiTransportFailure(timeout)).toBe("Gemini request timed out");
+  });
+
+  it("classifies native fetch network failures without exposing transport details", () => {
+    const network = Object.assign(new TypeError("fetch failed for private-host"), {
+      cause: { code: "ENOTFOUND" },
+    });
+    expect(describeGeminiTransportFailure(network)).toBe(
+      "Gemini network request could not be completed",
+    );
+  });
+});
+
+describe("GeminiProvider transient retries", () => {
+  it("retries 429 once and returns the successful claim extraction", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(apiResponse({ error: { message: "rate limited" } }, 429))
+      .mockResolvedValueOnce(apiResponse(validApiResponse));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const output = await retryProvider().extractClaims({ text: "Claim", inputType: "text" });
+
+    expect(output.claims).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries each transient 5xx status once", async () => {
+    for (const status of [500, 502, 503, 504]) {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(apiResponse({ error: { message: "temporary" } }, status))
+        .mockResolvedValueOnce(apiResponse(validApiResponse));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(retryProvider().extractClaims({ text: "Claim", inputType: "text" })).resolves.toEqual(
+        validModelOutput,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("retries native network and timeout failures once", async () => {
+    for (const error of [
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOTFOUND" } }),
+      Object.assign(new Error("timed out"), { name: "TimeoutError" }),
+    ]) {
+      const fetchMock = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce(apiResponse(validApiResponse));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(retryProvider().extractClaims({ text: "Claim", inputType: "text" })).resolves.toEqual(
+        validModelOutput,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not retry permanent HTTP errors", async () => {
+    for (const status of [400, 401, 403, 404]) {
+      const fetchMock = vi.fn().mockResolvedValue(apiResponse({ error: { message: "permanent" } }, status));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(retryProvider().extractClaims({ text: "Claim", inputType: "text" })).rejects.toBeInstanceOf(
+        AIError,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops after the configured maximum attempts for repeated transient errors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(apiResponse({ error: { message: "busy" } }, 503));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(retryProvider().extractClaims({ text: "Claim", inputType: "text" })).rejects.toMatchObject({
+      code: "AI_REQUEST_FAILED",
+      httpStatus: 503,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_GEMINI_REQUEST_ATTEMPTS);
+  });
+
+  it("does not retry a successful first request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(apiResponse(validApiResponse));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(retryProvider().extractClaims({ text: "Claim", inputType: "text" })).resolves.toEqual(
+      validModelOutput,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("identifies only the intended failures as transient", () => {
+    expect(isTransientGeminiError(new AIError("AI_RATE_LIMITED", "x", 429))).toBe(true);
+    expect(isTransientGeminiError(new AIError("AI_REQUEST_FAILED", "x", 503))).toBe(true);
+    expect(isTransientGeminiError(new AIError("AI_REQUEST_FAILED", "x"))).toBe(true);
+    expect(isTransientGeminiError(new AIError("AI_REQUEST_FAILED", "x", 400))).toBe(false);
+    expect(isTransientGeminiError(new AIError("AI_AUTH_FAILED", "x", 401))).toBe(false);
+    expect(isTransientGeminiError(new AIError("AI_INVALID_MODEL", "x", 404))).toBe(false);
+    expect(isTransientGeminiError(new AIError("AI_MALFORMED_OUTPUT", "x"))).toBe(false);
   });
 });
 

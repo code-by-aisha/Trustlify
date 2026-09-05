@@ -17,6 +17,8 @@
 import { describe, it, expect } from "vitest";
 import {
   calculateTrustDecision,
+  isAuthoritativeSource,
+  isFirstPartySource,
   type RiskSignal,
   type TrustEngineClaim,
   type TrustEngineEvidence,
@@ -319,6 +321,331 @@ describe("trustEngine — verdict rules", () => {
     );
 
     expect(decision.verdict).toBe("UNVERIFIED");
+  });
+});
+
+/* ─── First-party authority (surgical fix #1) ──────────────────────────────── */
+
+describe("trustEngine — first-party authority", () => {
+  /** The page the user submitted: banoqabil.org is an ordinary .org host. */
+  const SUBMITTED: TrustEngineSource = {
+    id: "s9",
+    domain: "banoqabil.org",
+    sourceType: "submitted",
+  };
+  /** A discovery on the same first-party host, classified only as 'unknown'. */
+  const SAME_DOMAIN: TrustEngineSource = {
+    id: "s8",
+    domain: "banoqabil.org",
+    sourceType: "unknown",
+  };
+
+  it("case A — the submitted first-party page satisfies the authority gate", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s9")],
+        sources: [SUBMITTED],
+        originalDomain: "banoqabil.org",
+        finalDomain: "banoqabil.org",
+        firstPartyDomains: ["banoqabil.org"],
+      }),
+    );
+
+    // No .gov/.edu/.ac source exists — first-party support is enough
+    expect(decision.verdict).toBe("VERIFIED");
+    expect(decision.trustScore).toBeGreaterThanOrEqual(70);
+    expect(decision.reasons).toContain(
+      "Official source confirms key claims: banoqabil.org.",
+    );
+  });
+
+  it("case B — a same-domain discovery is first-party without being submitted", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s8")],
+        sources: [SAME_DOMAIN],
+        firstPartyDomains: ["banoqabil.org"],
+      }),
+    );
+
+    expect(decision.verdict).toBe("VERIFIED");
+  });
+
+  it("matches hosts safely: subdomains and www qualify, lookalikes never", () => {
+    const decideFor = (domain: string) =>
+      calculateTrustDecision(
+        input({
+          claims: [claim("c1", "supported")],
+          evidence: [evidence("c1", "s8")],
+          sources: [{ id: "s8", domain, sourceType: "unknown" }],
+          firstPartyDomains: ["www.example.org", "apply.example.org"],
+        }),
+      ).verdict;
+
+    expect(decideFor("example.org")).toBe("VERIFIED"); // www-stripped first party
+    expect(decideFor("courses.example.org")).toBe("VERIFIED"); // true subdomain
+    expect(decideFor("apply.example.org")).toBe("VERIFIED");
+    // Boundary safety: substring/name similarity is NOT a domain match
+    expect(decideFor("evil-example.org")).toBe("UNVERIFIED");
+    expect(decideFor("example.org.evil.net")).toBe("UNVERIFIED");
+    expect(decideFor("banoqabil-example.org")).toBe("UNVERIFIED");
+  });
+
+  it("case C — first-party source with insufficient evidence stays UNVERIFIED", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "insufficient"), claim("c2", "supported")],
+        evidence: [evidence("c2", "s9")],
+        sources: [SUBMITTED],
+        firstPartyDomains: ["banoqabil.org"],
+      }),
+    );
+
+    expect(decision.verdict).toBe("UNVERIFIED");
+  });
+
+  it("case D — an unrelated third-party domain never becomes authoritative", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s7")],
+        sources: [{ id: "s7", domain: "banoqabil-alerts.net", sourceType: "unknown" }],
+        firstPartyDomains: ["banoqabil.org"],
+        riskSignals: signals("weak_source_authority"),
+      }),
+    );
+
+    expect(decision.verdict).toBe("UNVERIFIED");
+  });
+
+  it("case E — government/academic authority still works, with or without a first party", () => {
+    const noFirstParty = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s1")],
+        sources: [GOV],
+      }),
+    );
+    const withFirstParty = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s1")],
+        sources: [GOV],
+        firstPartyDomains: ["some-scholarship.com"],
+      }),
+    );
+
+    expect(noFirstParty.verdict).toBe("VERIFIED");
+    expect(withFirstParty.verdict).toBe("VERIFIED");
+    expect(withFirstParty.trustScore).toBe(noFirstParty.trustScore);
+  });
+
+  it("a bare TLD is not authority — an ordinary .org/.com stays non-authoritative", () => {
+    // Same .org/.com hosts as the first-party cases, but nothing was submitted
+    for (const domain of ["banoqabil.org", "some-scholarship.com"]) {
+      const decision = calculateTrustDecision(
+        input({
+          claims: [claim("c1", "supported")],
+          evidence: [evidence("c1", "s8")],
+          sources: [{ id: "s8", domain, sourceType: "unknown" }],
+          riskSignals: signals("weak_source_authority"),
+        }),
+      );
+      expect(decision.verdict).toBe("UNVERIFIED");
+    }
+  });
+
+  it("is deterministic: the same first-party input always gives the same decision", () => {
+    const build = () =>
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s9")],
+        sources: [SUBMITTED],
+        firstPartyDomains: ["banoqabil.org"],
+      });
+
+    expect(calculateTrustDecision(build())).toEqual(calculateTrustDecision(build()));
+  });
+
+  it("is generic across ordinary organizational domains — .org, .com, .io and .pk alike", () => {
+    // No allowlist of TLDs and no domain names baked into the engine: any page
+    // the user actually submitted is first-party for that investigation.
+    for (const domain of ["event.example.org", "event.example.com", "event.example.io", "event.example.pk"]) {
+      const decision = calculateTrustDecision(
+        input({
+          claims: [claim("c1", "supported")],
+          evidence: [evidence("c1", "s9")],
+          sources: [{ id: "s9", domain, sourceType: "submitted" }],
+          firstPartyDomains: [domain],
+        }),
+      );
+      expect(decision.verdict).toBe("VERIFIED");
+      expect(decision.reasons).toContain(`Official source confirms key claims: ${domain}.`);
+    }
+  });
+});
+
+/* ─── Authority shared with the risk layer (surgical fix #2) ──────────────── */
+
+describe("riskEngine — authority model shared with the Trust Engine", () => {
+  const OWN_PAGE = { domain: "hackathon.example.org", sourceType: "submitted" };
+  /** A discovery on the SAME host (www-prefixed), classified only as 'unknown'. */
+  const SAME_HOST = { domain: "www.hackathon.example.org", sourceType: "unknown" };
+  const LOOKALIKE = { domain: "hackathon-example.org", sourceType: "unknown" };
+  const ORDINARY_ORG = { domain: "some-blog.org", sourceType: "unknown" };
+
+  it("isAuthoritativeSource accepts government, academic and genuine first-party only", () => {
+    const own = ["hackathon.example.org"];
+    expect(isAuthoritativeSource({ domain: "hec.gov.pk", sourceType: "government" }, own)).toBe(true);
+    expect(isAuthoritativeSource({ domain: "mit.edu", sourceType: "academic" }, own)).toBe(true);
+    expect(isAuthoritativeSource(OWN_PAGE, own)).toBe(true);
+    expect(isAuthoritativeSource(SAME_HOST, own)).toBe(true); // same host, www stripped
+    // Rejected: an unrelated .org, and a name lookalike that merely contains it
+    expect(isAuthoritativeSource(ORDINARY_ORG, own)).toBe(false);
+    expect(isAuthoritativeSource(LOOKALIKE, own)).toBe(false);
+    // Rejected: a SIBLING subdomain of the registrable domain is not the owner
+    // of the submitted page — matching stays on hostname boundaries.
+    expect(isAuthoritativeSource({ domain: "cdn.example.org", sourceType: "unknown" }, own)).toBe(
+      false,
+    );
+    // Rejected: no submitted page → only gov/academic can be authoritative
+    expect(isAuthoritativeSource(SAME_HOST, undefined)).toBe(false);
+    expect(isAuthoritativeSource(SAME_HOST, [])).toBe(false);
+  });
+
+  it("isFirstPartySource matches hostnames on boundaries, never substrings", () => {
+    const own = ["example.org"];
+    expect(isFirstPartySource({ domain: "EXAMPLE.ORG", sourceType: "unknown" }, own)).toBe(true);
+    expect(isFirstPartySource({ domain: "www.example.org", sourceType: "unknown" }, own)).toBe(true);
+    expect(isFirstPartySource({ domain: "apply.example.org", sourceType: "unknown" }, own)).toBe(true);
+    expect(isFirstPartySource({ domain: "evil-example.org", sourceType: "unknown" }, own)).toBe(false);
+    expect(isFirstPartySource({ domain: "example.org.evil.net", sourceType: "unknown" }, own)).toBe(false);
+    expect(isFirstPartySource({ domain: "", sourceType: "unknown" }, own)).toBe(false);
+  });
+
+  it("weak_source_authority measures INDEPENDENT corroboration — a first-party page does not clear it", () => {
+    // Deliberate: the organization's own page can be an authoritative witness
+    // but is never outside confirmation, so scam detection keeps its teeth.
+    const result = detectRiskSignals({
+      domainChanged: false,
+      originalDomain: null,
+      finalDomain: null,
+      claims: [],
+      sourceTypes: ["submitted", "unknown"],
+      hasAuthoritativeSupport: true,
+    });
+    expect(result.find((s) => s.code === "weak_source_authority")?.present).toBe(true);
+    // … while the organization claim itself IS officially confirmed (fix #1 gate)
+    expect(
+      result.find((s) => s.code === "missing_official_confirmation")?.present,
+    ).toBe(false);
+  });
+});
+
+/* ─── Payment risk is contextual, not keyword-only (surgical fix #2) ───────── */
+
+describe("riskEngine — payment_request context", () => {
+  /** The submitted first-party page, as the executor reports it. */
+  const SUBMITTED: TrustEngineSource = {
+    id: "s9",
+    domain: "banoqabil.org",
+    sourceType: "submitted",
+  };
+  const base = {
+    domainChanged: false,
+    originalDomain: null,
+    finalDomain: null,
+    sourceTypes: ["government"],
+    hasAuthoritativeSupport: true,
+  };
+
+  function paymentFor(text: string, type = "fee"): boolean {
+    const result = detectRiskSignals({
+      ...base,
+      claims: [{ id: "c1", text, type, importance: "critical", status: "supported" }],
+    });
+    return result.find((s) => s.code === "payment_request")?.present ?? false;
+  }
+
+  it("keeps flagging genuine payment demands", () => {
+    // The brief's must-still-flag cases, as the pipeline delivers them: a
+    // payment instruction is extracted as a 'fee' claim, and the untouched
+    // payment phrasing patterns also catch demands in any other claim type.
+    expect(paymentFor("Pay Rs 5,000 to register")).toBe(true);
+    expect(paymentFor("Payment of Rs 5,000 is required to confirm your seat", "other")).toBe(true);
+    expect(paymentFor("Registration fee is required")).toBe(true);
+    expect(paymentFor("Send payment to reserve your place", "other")).toBe(true);
+    expect(paymentFor("A non-refundable application fee of €25 applies")).toBe(true);
+    // Refundability is about money BACK, never about it being absent
+    expect(paymentFor("A non-refundable registration fee of Rs 500 applies", "other")).toBe(true);
+    expect(paymentFor("The registration fee is not refundable")).toBe(true);
+  });
+
+  it("does not flag negated or free registration wording", () => {
+    // The Bano Qabil shape: a 'fee' claim whose own text denies any charge.
+    expect(
+      paymentFor("Registration and participation in the AI Hackathon are completely free of charge"),
+    ).toBe(false);
+    expect(paymentFor("No registration fee is required")).toBe(false);
+    expect(paymentFor("Registration is free")).toBe(false);
+    expect(paymentFor("There is no application fee")).toBe(false);
+    expect(paymentFor("We do not charge applicants", "other")).toBe(false);
+    expect(paymentFor("The participation fee is waived for students")).toBe(false);
+  });
+
+  it("keeps a real demand when a different clause mentions free", () => {
+    expect(
+      paymentFor("Workshops are free of charge, but a registration fee is required to apply"),
+    ).toBe(true);
+    expect(paymentFor("Travel is not covered. A processing fee of Rs 500 applies.", "other")).toBe(
+      true,
+    );
+  });
+
+  it("a payment signal still combines with weak authority into HIGH_RISK", () => {
+    // Context-awareness must not become a general HIGH_RISK weakening.
+    const risky = detectRiskSignals({
+      ...base,
+      sourceTypes: ["submitted", "unknown"],
+      hasAuthoritativeSupport: true,
+      claims: [
+        { id: "c1", text: "Registration fee is required", type: "fee", importance: "critical", status: "supported" },
+      ],
+    });
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s9")],
+        sources: [SUBMITTED],
+        firstPartyDomains: ["banoqabil.org"],
+        riskSignals: risky,
+      }),
+    );
+    expect(decision.verdict).toBe("HIGH_RISK");
+  });
+
+  it("a negated fee statement on the same first-party page reaches VERIFIED", () => {
+    const harmless = detectRiskSignals({
+      ...base,
+      sourceTypes: ["submitted", "unknown"],
+      hasAuthoritativeSupport: true,
+      claims: [
+        { id: "c1", text: "Registration and participation are free of charge", type: "fee", importance: "critical", status: "supported" },
+      ],
+    });
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported")],
+        evidence: [evidence("c1", "s9")],
+        sources: [SUBMITTED],
+        firstPartyDomains: ["banoqabil.org"],
+        riskSignals: harmless,
+      }),
+    );
+    expect(harmless.find((s) => s.code === "payment_request")?.present).toBe(false);
+    expect(decision.verdict).toBe("VERIFIED");
   });
 });
 

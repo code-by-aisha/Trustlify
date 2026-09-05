@@ -67,6 +67,30 @@ describe("category 8 — valid Tavily source normalization", () => {
     }
   });
 
+  it("accepts a 'submitted' source row yet never classifies one from a hostname", () => {
+    // The executor tags the user's own fetched page explicitly, so the tag is
+    // a valid source type across the pipeline (same schema, same column).
+    expect(
+      normalizedSourceSchema.safeParse({
+        title: "Bano Qabil Hackathon",
+        url: "https://banoqabil.org/hackathon",
+        domain: "banoqabil.org",
+        snippet: "",
+        sourceType: "submitted",
+        retrievedAt: NOW.toISOString(),
+      }).success,
+    ).toBe(true);
+
+    // A TLD alone never yields it: .org/.com/.io stay 'unknown' as discoveries
+    for (const url of [
+      "https://banoqabil.org/hackathon",
+      "https://some-scholarship.com/apply",
+      "https://startup.io/opportunity",
+    ]) {
+      expect(classifySourceType(url)).toBe("unknown");
+    }
+  });
+
   it("truncates oversized titles and snippets to storage bounds", () => {
     const sources = normalizeSearchSources(
       [

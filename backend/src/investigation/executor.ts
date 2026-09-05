@@ -22,7 +22,15 @@
  * investigation (there is no content to investigate); a search with no useful
  * results continues honestly and can end UNVERIFIED; a source-fetch failure
  * keeps the source metadata and marks its content unavailable; an
- * evidence-analysis failure invents nothing and allows UNVERIFIED.
+ * evidence-analysis failure invents nothing AND does not masquerade as a
+ * verdict — it fails the investigation with its own cause.
+ *
+ * Every content failure is additionally classified into an explicit
+ * `ContentFailureCode` (INVALID_URL / FETCH_FAILED / ACCESS_BLOCKED /
+ * EXTRACTION_FAILED / EMPTY_CONTENT / UNSUPPORTED_CONTENT) whose user-facing
+ * message says what happened, why, and what to do next — a student never sees a
+ * vague pipeline error when a specific reason exists. A redirect is not one of
+ * those failures (see webExtractor's REDIRECTED outcome).
  *
  * ⚠ UNTRUSTED CONTENT BOUNDARY (spec 12/22): claim text, titles, snippets,
  * and fetched page content enter this pipeline as inert string data. They are
@@ -36,12 +44,14 @@ import { logger } from "../utils/logger.js";
 import { GeminiProvider } from "../ai/GeminiProvider.js";
 import { TavilySearchProvider } from "../search/TavilySearchProvider.js";
 import { AIError } from "../ai/errors.js";
+import type { AIErrorCode } from "../ai/errors.js";
 import { SearchError } from "../search/errors.js";
-import type { AIProvider } from "../ai/AIProvider.js";
+import type { AIProvider, AnalyzeEvidenceOutput } from "../ai/AIProvider.js";
 import type { SearchProvider } from "../search/SearchProvider.js";
 import {
   normalizeInvestigationInput,
   InputValidationError,
+  type NormalizedInput,
 } from "./inputNormalizer.js";
 import { rankClaims } from "./claimSelector.js";
 import { planSearchQueries, SEARCH_MAX_RESULTS } from "./searchPlanner.js";
@@ -49,9 +59,20 @@ import {
   normalizeSearchSources,
   dedupeSources,
   selectSourcesForFetch,
+  canonicalUrlKey,
   type NormalizedSource,
 } from "./sourceNormalizer.js";
-import { fetchWebContent, WebFetchError, type FetchedWebContent } from "./webExtractor.js";
+import {
+  fetchWebContent,
+  WebFetchError,
+  contentFailureFromFetchError,
+  contentOutcomeOf,
+  describeContentFailure,
+  isContentFailureCode,
+  type ContentFailure,
+  type ContentFailureCode,
+  type FetchedWebContent,
+} from "./webExtractor.js";
 import {
   validateEvidenceAnalysis,
   deriveClaimStatuses,
@@ -61,7 +82,11 @@ import {
 } from "./investigator.js";
 import { assessInvestigationCurrentness } from "../engines/currentnessEngine.js";
 import { detectRiskSignals } from "../engines/riskEngine.js";
-import { calculateTrustDecision, type Verdict } from "../engines/trustEngine.js";
+import {
+  calculateTrustDecision,
+  isAuthoritativeSource,
+  type Verdict,
+} from "../engines/trustEngine.js";
 import type { ClaimType, ClaimImportance } from "../types/investigation.js";
 
 /* ─── Stage model (spec 32) ───────────────────────────────────────────────── */
@@ -400,18 +425,44 @@ export function createSupabaseExecutorStore(): ExecutorStore {
 /* ─── Safe failure messages (spec 33) ─────────────────────────────────────── */
 
 /**
+ * The structured content failure behind an error, when there is one. Content
+ * failures are the only investigation failures a student can act on, so they
+ * are classified by CATEGORY rather than by prose.
+ */
+function contentFailureFrom(error: unknown): ContentFailure | null {
+  return error instanceof WebFetchError ? contentFailureFromFetchError(error) : null;
+}
+
+/**
+ * The evidence-analysis stage failed while the content was already in hand.
+ * This must never be phrased as a judgement about the investigated website:
+ * Trustlify read the page successfully — its own analysis did not finish.
+ */
+export const EVIDENCE_ANALYSIS_FAILURE_MESSAGE =
+  "The sources were fetched successfully, but Trustlify could not complete the evidence analysis — this is a Trustlify service issue, not a finding about this website. Please run the investigation again in a few minutes.";
+
+/**
  * Map any executor failure to a safe, user-facing message.
  * Never includes API keys, internal details, SQL, or stack traces — those go
- * to the server log only.
+ * to the server log only. A page that could not be read is reported by its
+ * specific category (what happened + why + what to do next) instead of one
+ * generic "could not be fetched" line.
+ *
+ * `stage` matters for AI errors only: the stage is what decides who is at
+ * fault. An evidence-analysis failure happens after a successful read, so it
+ * names Trustlify; every other AI failure keeps the generic service line.
  */
-export function safeFailureMessage(error: unknown): string {
+export function safeFailureMessage(error: unknown, stage?: string): string {
   if (error instanceof InputValidationError) {
     return error.message;
   }
   if (error instanceof WebFetchError) {
-    return "The submitted page could not be fetched safely — the investigation could not continue.";
+    return describeContentFailure(contentFailureFromFetchError(error));
   }
   if (error instanceof AIError) {
+    if (stage === "ANALYZING_EVIDENCE") {
+      return EVIDENCE_ANALYSIS_FAILURE_MESSAGE;
+    }
     return "The AI service could not complete this investigation. Please try again later.";
   }
   if (error instanceof SearchError) {
@@ -505,6 +556,19 @@ export interface InvestigationRunResult {
   trustScore: number | null;
   searchQueries: string[];
   errorMessage: string | null;
+  /**
+   * Explicit category of a content failure (invalid link, blocked, unusable
+   * content…), null when the failure was something else. Structured companion
+   * to `errorMessage` so callers can branch on the cause, not on prose.
+   */
+  failureCode: ContentFailureCode | null;
+  /**
+   * Provider category of an evidence-analysis failure, null otherwise. Kept
+   * separate from `failureCode` on purpose: `failureCode` classifies failures
+   * to READ content, while an analysis failure happens after the content was
+   * read successfully — so the two must never be conflated by a caller.
+   */
+  aiFailureCode: AIErrorCode | null;
 }
 
 /**
@@ -526,15 +590,28 @@ export async function runInvestigation(
   let verdict: Verdict | null = null;
   let trustScore: number | null = null;
 
-  const fail = async (error: unknown): Promise<InvestigationRunResult> => {
+  const fail = async (
+    error: unknown,
+    /** Category decided by a call site (e.g. unusable content). */
+    failure?: ContentFailure,
+  ): Promise<InvestigationRunResult> => {
+    const classified = failure ?? contentFailureFrom(error) ?? undefined;
+    // Only an AI failure inside the analysis stage is an analysis outage; the
+    // page itself was already read at that point.
+    const aiFailureCode =
+      stage === "ANALYZING_EVIDENCE" && error instanceof AIError
+        ? error.code
+        : null;
     const message =
       error instanceof FileLoadError
         ? error.message
-        : safeFailureMessage(error);
+        : classified
+          ? describeContentFailure(classified)
+          : safeFailureMessage(error, stage);
     logger.error("Investigation failed", {
       investigationId,
       stage,
-      code: errorCodeOf(error),
+      code: classified?.code ?? errorCodeOf(error),
       // Provider messages are already scrubbed of secrets by the providers.
       detail:
         error instanceof AIError ||
@@ -569,6 +646,8 @@ export async function runInvestigation(
       trustScore,
       searchQueries,
       errorMessage: message,
+      failureCode: classified?.code ?? null,
+      aiFailureCode,
     };
   };
 
@@ -579,11 +658,28 @@ export async function runInvestigation(
     }
 
     /* ── Stage: NORMALIZING (set by the start endpoint before this runs) ── */
-    const normalized = normalizeInvestigationInput({
-      inputType: investigation.inputType,
-      inputText: investigation.inputText ?? undefined,
-      inputFilePath: investigation.inputFilePath ?? undefined,
-    });
+    let normalized: NormalizedInput;
+    try {
+      normalized = normalizeInvestigationInput({
+        inputType: investigation.inputType,
+        inputText: investigation.inputText ?? undefined,
+        inputFilePath: investigation.inputFilePath ?? undefined,
+      });
+    } catch (normalizationError) {
+      // A link the pipeline cannot even name is the user's most fixable
+      // problem, so it gets the explicit category instead of a raw schema line.
+      if (investigation.inputType === "url") {
+        return await fail(normalizationError, {
+          code: "INVALID_URL",
+          // Our own validation text — never the submitted value itself.
+          reason:
+            normalizationError instanceof InputValidationError
+              ? normalizationError.message
+              : undefined,
+        });
+      }
+      return await fail(normalizationError);
+    }
 
     /* ── Stage: EXTRACTING_CONTENT — obtain the actual content ── */
     let contentText: string | null = null;
@@ -592,6 +688,12 @@ export async function runInvestigation(
     let domainChanged = false;
     let originalDomain: string | null = null;
     let finalDomain: string | null = null;
+    /**
+     * The submitted page once its content is actually in hand. Kept for the
+     * evidence stages: the page the user named must not be dropped after claim
+     * extraction, and it is reused here WITHOUT fetching it a second time.
+     */
+    let submittedPage: FetchedWebContent | null = null;
 
     if (normalized.type === "url") {
       stage = "EXTRACTING_CONTENT";
@@ -599,6 +701,7 @@ export async function runInvestigation(
 
       // Real page content — never claims from the URL string (spec 07)
       const fetched = await deps.fetchContent(normalized.sourceUrl!);
+      submittedPage = fetched;
       contentText = fetched.text;
       domainChanged = fetched.domainChanged;
       originalDomain = fetched.originalDomain;
@@ -613,6 +716,15 @@ export async function runInvestigation(
         domainChanged: fetched.domainChanged,
         contentTruncated: fetched.contentTruncated,
       });
+
+      // A redirect (SUCCESS/REDIRECTED) continues normally — its details were
+      // just persisted. Only unusable CONTENT stops the investigation, and it
+      // stops here with the specific reason rather than as a later, vaguer
+      // failure or a wasted AI request.
+      const outcome = contentOutcomeOf(fetched);
+      if (isContentFailureCode(outcome)) {
+        return await fail(new Error(`submitted page: ${outcome}`), { code: outcome });
+      }
     } else if (normalized.type === "image" || normalized.type === "pdf") {
       stage = "EXTRACTING_CONTENT";
       await store.updateInvestigation(investigationId, { currentStage: stage });
@@ -631,6 +743,7 @@ export async function runInvestigation(
     if (!contentText && !fileBase64) {
       return await fail(
         new InputValidationError("Input content is empty after normalization"),
+        { code: "EMPTY_CONTENT" },
       );
     }
 
@@ -695,23 +808,60 @@ export async function runInvestigation(
       normalizeSearchSources(collectedResults),
     );
 
+    // ONE evidence universe = the submitted original page + the Tavily
+    // discoveries. The submitted page is already fetched, so reusing that same
+    // response adds no network request; a discovery pointing at the same page
+    // is dropped so it is never counted (or fetched) twice.
+    const submittedSource = submittedSourceFrom(submittedPage);
+    const submittedKey = submittedSource
+      ? canonicalUrlKey(submittedSource.url)
+      : "";
+    const discoveredSources = submittedKey
+      ? normalizedSources.filter(
+          (source) => canonicalUrlKey(source.url) !== submittedKey,
+        )
+      : normalizedSources;
+    const evidenceSources: NormalizedSource[] = submittedSource
+      ? [submittedSource, ...discoveredSources]
+      : discoveredSources;
+
     /* ── Stage: READING_SOURCES — persist sources, fetch selected content ── */
     stage = "READING_SOURCES";
     await store.updateInvestigation(investigationId, { currentStage: stage });
 
     const persistedSources = await store.insertSources(
       investigationId,
-      normalizedSources,
+      evidenceSources,
     );
     sourceCount = persistedSources.length;
 
-    // Deterministic selection of ≤3 sources for content fetching (spec 18)
+    // Deterministic selection of ≤3 sources for content fetching (spec 18).
+    // Only discoveries are candidates: the submitted page is already in hand,
+    // so the fetch budget is unchanged and no page is fetched twice.
     const selectedForFetch = selectSourcesForFetch(
-      normalizedSources,
+      discoveredSources,
       env.INVESTIGATION_MAX_SOURCE_FETCHES,
     );
 
     const fetchedContentBySourceId = new Map<string, FetchedWebContent>();
+
+    if (submittedSource && submittedPage) {
+      const persistedSubmitted = persistedSources.find(
+        (source) =>
+          source.sourceType === "submitted" &&
+          source.url === submittedSource.url,
+      );
+      if (persistedSubmitted) {
+        // First entry of the evidence set, carrying the content already read
+        // during EXTRACTING_CONTENT — a real passage for Gemini, not a snippet.
+        fetchedContentBySourceId.set(persistedSubmitted.id, submittedPage);
+        await store.updateSourceContent(persistedSubmitted.id, {
+          accessStatus: "available",
+          publishedAt: submittedPage.publishedAt,
+        });
+      }
+    }
+
     for (const source of selectedForFetch) {
       const persisted = persistedSources.find(
         (row) => row.url === source.url,
@@ -768,8 +918,9 @@ export async function runInvestigation(
           importance: claim.importance,
         }));
 
+      let analysis: AnalyzeEvidenceOutput;
       try {
-        const output = await deps.ai.analyzeEvidence({
+        analysis = await deps.ai.analyzeEvidence({
           claims: analysisClaims.map((claim) => ({
             id: claim.id,
             text: claim.text,
@@ -787,28 +938,57 @@ export async function runInvestigation(
             text: source.content,
           })),
         });
-
-        // Validate the model's output — never trust it blindly (spec 21)
-        const validated = validateEvidenceAnalysis({
-          candidates: output.evidence,
-          claims: analysisClaims,
-          sources: investigatorSources,
-        });
-        validatedEvidence = validated.evidence;
-        if (validated.rejectedCount > 0) {
-          logger.warn("Evidence analysis items rejected", {
-            investigationId,
-            rejected: validated.rejectedCount,
-          });
-        }
       } catch (analysisError) {
-        // Spec 33: no invented relationships, no invented verdict —
-        // continue honestly; the Trust Engine will allow UNVERIFIED.
-        logger.error("Evidence analysis failed — continuing without evidence", {
+        // Spec 33 forbids inventing relationships — it does not permit keeping
+        // quiet about a missing analysis. The content was read; only our
+        // reasoning failed, so the real cause is preserved and the run stops
+        // here instead of completing as an UNVERIFIED verdict about the site.
+        logger.error("Evidence analysis failed — the investigation cannot be judged", {
           investigationId,
           code: analysisError instanceof AIError ? analysisError.code : undefined,
           detail:
             analysisError instanceof AIError ? analysisError.message : undefined,
+        });
+        return await fail(analysisError);
+      }
+
+      if (analysis.evidence.length === 0) {
+        // Zero items is not "the evidence is insufficient": an analysis that
+        // classified nothing produced no verdict at all. The provider contract
+        // rejects this shape too (see analyzeEvidenceResponseSchema); this guard
+        // keeps the outcome identical for any other provider implementation.
+        return await fail(
+          new AIError(
+            "AI_MALFORMED_OUTPUT",
+            "Evidence analysis returned no items for the supplied claims and passages",
+          ),
+        );
+      }
+
+      // Validate the model's output — never trust it blindly (spec 21).
+      // Rejections drop individual items: surviving evidence still stands, and
+      // only a total absence of usable analysis stops the investigation.
+      const validated = validateEvidenceAnalysis({
+        candidates: analysis.evidence,
+        claims: analysisClaims,
+        sources: investigatorSources,
+      });
+      validatedEvidence = validated.evidence;
+      if (validatedEvidence.length === 0) {
+        // A non-empty response whose every item was rejected is not evidence
+        // insufficiency about the website. It is an unusable AI analysis and
+        // must not quietly become a completed UNVERIFIED investigation.
+        return await fail(
+          new AIError(
+            "AI_MALFORMED_OUTPUT",
+            "Evidence analysis contained no usable items for the supplied claims and passages",
+          ),
+        );
+      }
+      if (validated.rejectedCount > 0) {
+        logger.warn("Evidence analysis items rejected", {
+          investigationId,
+          rejected: validated.rejectedCount,
         });
       }
     }
@@ -872,14 +1052,27 @@ export async function runInvestigation(
       })),
     );
 
+    // First-party hosts known for THIS investigation: the host the user
+    // submitted and the host it finally resolved to. Empty unless a page was
+    // actually submitted and fetched — discoveries never invent one.
+    const firstPartyDomains = [
+      safeHostname(submittedPage?.originalUrl ?? ""),
+      safeHostname(submittedPage?.finalUrl ?? ""),
+    ].filter(Boolean);
+
     const supportedSourceIds = new Set(
       validatedEvidence
         .filter((item) => item.relation === "supports")
         .map((item) => item.sourceId),
     );
+    // One authority definition for the whole investigation: the Trust Engine
+    // gate (government / academic / first-party) also decides whether the risk
+    // layer may report "no official source confirms this". A genuine
+    // organization's own page IS official confirmation of its own identity —
+    // it still needs real supporting evidence for that, as before.
     const hasAuthoritativeSupport = sourcesForEngine.some(
       (source) =>
-        (source.sourceType === "government" || source.sourceType === "academic") &&
+        isAuthoritativeSource(source, firstPartyDomains) &&
         supportedSourceIds.has(source.id),
     );
 
@@ -906,6 +1099,7 @@ export async function runInvestigation(
       domainChanged,
       originalDomain,
       finalDomain,
+      firstPartyDomains,
     });
     verdict = decision.verdict;
     trustScore = decision.trustScore;
@@ -946,6 +1140,8 @@ export async function runInvestigation(
       trustScore: decision.trustScore,
       searchQueries,
       errorMessage: null,
+      failureCode: null,
+      aiFailureCode: null,
     };
   } catch (error) {
     return await fail(error);
@@ -968,6 +1164,35 @@ function isGovernmentOrAcademic(url: string): boolean {
   const last = labels[labels.length - 1];
   const secondToLast = labels.length >= 2 ? labels[labels.length - 2] : undefined;
   return last === "gov" || secondToLast === "gov" || last === "edu" || secondToLast === "edu" || secondToLast === "ac";
+}
+
+/**
+ * Turn the already-fetched submitted page into a first-class investigation
+ * source so it can carry evidence. 'submitted' is assigned because the USER
+ * named this page and its content is genuinely in hand — it is a first-party
+ * relationship, not a guess from a `.org`/`.com`/`.io` hostname. Returns null
+ * when there is no fetched page (text/image/PDF inputs), which leaves the
+ * evidence universe exactly as it was.
+ */
+function submittedSourceFrom(
+  fetched: FetchedWebContent | null,
+): NormalizedSource | null {
+  if (!fetched) return null;
+
+  const host = safeHostname(fetched.finalUrl).replace(/^www\./, "");
+  // No host or no readable content → no source row is fabricated (spec 10).
+  if (!host || fetched.text.trim().length === 0) return null;
+
+  return {
+    title: (fetched.title?.trim() || host).slice(0, 300),
+    url: fetched.finalUrl,
+    domain: host,
+    // A submitted page has no search snippet, and its page text is never
+    // relabelled as one — the evidence tab shows its real verified excerpts.
+    snippet: "",
+    sourceType: "submitted",
+    retrievedAt: new Date().toISOString(),
+  };
 }
 
 /* ─── Background entry point ──────────────────────────────────────────────── */

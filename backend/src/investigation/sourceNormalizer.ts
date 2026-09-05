@@ -27,8 +27,14 @@ import type { ClaimType } from "../types/investigation.js";
 /**
  * Conservative source classification. Mirrors the existing SourceType domain
  * taxonomy; 'social' and 'unknown' are the Phase 3C additions.
+ *
+ * 'submitted' is NOT a hostname heuristic: classifySourceType never returns it.
+ * It marks the page the user explicitly submitted and whose content was
+ * actually fetched, so the original page is identifiable inside the evidence
+ * universe (a first-party relationship, never a TLD judgement).
  */
 export const classifiedSourceTypeSchema = z.enum([
+  "submitted",
   "government",
   "academic",
   "news",

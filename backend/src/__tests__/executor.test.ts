@@ -488,10 +488,127 @@ describe("executor — URL input", () => {
     });
   });
 
+  it("keeps the submitted page in the evidence universe without fetching it again", async () => {
+    const { deps, calls } = createFakeDeps();
+    const { store, insertedSources, insertedEvidence } = createFakeStore({
+      inputType: "url",
+      inputText: "https://example.com/scholarship",
+    });
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("complete");
+
+    // 1. The submitted page is persisted as a source of its own
+    expect(insertedSources[0]).toMatchObject({
+      sourceType: "submitted",
+      url: "https://example.com/scholarship",
+      domain: "example.com",
+      title: "Example Scholarship Page",
+    });
+    // Tavily discoveries are kept alongside it
+    expect(insertedSources.map((source) => source.domain)).toEqual([
+      "example.com",
+      "hec.gov.pk",
+      "lums.edu.pk",
+    ]);
+
+    // 2. It reaches the evidence-analysis source/passage set
+    const analysis = calls.analyzeInputs[0]!;
+    const submitted = analysis.sources.find(
+      (source) => source.sourceType === "submitted",
+    );
+    expect(submitted?.domain).toBe("example.com");
+    expect(
+      analysis.passages.find((passage) => passage.sourceId === submitted?.id)?.text,
+    ).toContain("fully funded");
+
+    // 3. Its content is REUSED — the page is fetched exactly once
+    expect(
+      calls.fetchUrls.filter((url) => url === "https://example.com/scholarship"),
+    ).toHaveLength(1);
+
+    // 4. Evidence can attach to it like any other investigator source
+    expect(insertedEvidence.some((item) => item.sourceId === submitted?.id)).toBe(
+      true,
+    );
+  });
+
+  it("spends no source-fetch budget on the already-fetched submitted page", async () => {
+    const { deps, calls } = createFakeDeps({
+      search: async () => ({
+        query: "q",
+        results: [
+          "https://one.example.org/a",
+          "https://two.example.org/b",
+          "https://three.example.org/c",
+          "https://four.example.org/d",
+        ].map((url, i) => ({
+          title: `Result ${i + 1}`,
+          url,
+          snippet: `Snippet ${i + 1} about the scholarship.`,
+        })),
+      }),
+    });
+    const { store } = createFakeStore({
+      inputType: "url",
+      inputText: "https://example.com/scholarship",
+    });
+
+    await runInvestigation("inv-1", deps, store);
+
+    // 1 submitted page + the unchanged maximum of 3 discovery fetches
+    expect(calls.fetchContentCalls).toBeLessThanOrEqual(4);
+    expect(
+      calls.fetchUrls.filter((url) => url === "https://example.com/scholarship"),
+    ).toHaveLength(1);
+  });
+
+  it("uses one logical source when a discovery repeats the submitted URL", async () => {
+    const { deps, calls } = createFakeDeps({
+      search: async () => ({
+        query: "q",
+        results: [
+          // Same page, different scheme/trailing-slash spelling
+          { title: "Duplicate", url: "http://example.com/scholarship/", snippet: "Same page." },
+          { title: "HEC", url: "https://hec.gov.pk/scholarships", snippet: "Official page." },
+        ],
+      }),
+    });
+    const { store, insertedSources } = createFakeStore({
+      inputType: "url",
+      inputText: "https://example.com/scholarship",
+    });
+
+    await runInvestigation("inv-1", deps, store);
+
+    expect(insertedSources.map((source) => source.domain)).toEqual([
+      "example.com",
+      "hec.gov.pk",
+    ]);
+    expect(insertedSources.filter((source) => source.sourceType === "submitted")).toHaveLength(1);
+    expect(
+      calls.fetchUrls.filter((url) => url === "https://example.com/scholarship"),
+    ).toHaveLength(1);
+  });
+
+  it("leaves the evidence universe unchanged for non-URL inputs", async () => {
+    const { deps, calls } = createFakeDeps();
+    const { store, insertedSources } = createFakeStore();
+
+    await runInvestigation("inv-1", deps, store);
+
+    expect(insertedSources.some((source) => source.sourceType === "submitted")).toBe(
+      false,
+    );
+    // No submitted page → no reuse step, discoveries only
+    expect(calls.fetchContentCalls).toBeLessThanOrEqual(3);
+  });
+
   it("fails honestly at EXTRACTING_CONTENT when the submitted URL cannot be fetched", async () => {
     const { deps, calls } = createFakeDeps({
       fetchContent: async () => {
-        throw new WebFetchError("HTTP_ERROR", "The page responded with status 404");
+        throw new WebFetchError("HTTP_ERROR", "The page responded with status 404", 404);
       },
     });
     const { store } = createFakeStore({
@@ -503,9 +620,246 @@ describe("executor — URL input", () => {
 
     expect(result.finalStatus).toBe("failed");
     expect(result.finalStage).toBe("EXTRACTING_CONTENT");
-    expect(result.errorMessage).toContain("could not be fetched safely");
+    // Surgical fix #2: the named category and the received status replace the
+    // old generic "could not be fetched safely" line.
+    expect(result.failureCode).toBe("FETCH_FAILED");
+    expect(result.errorMessage).toContain("could not reach this page");
+    expect(result.errorMessage).toContain("status 404");
     // No AI credits spent when there is no content
     expect(calls.extractClaimsCalls).toBe(0);
+  });
+});
+
+/* ─── URL robustness: explicit content failure categories ─────────────────── */
+
+describe("executor — content failure categories", () => {
+  /** Every category must be named, actionable, and burn no AI credits. */
+  async function runIntoFailure(
+    inputText: string,
+    fetchContent: (url: string) => Promise<FetchedWebContent>,
+  ) {
+    const { deps, calls } = createFakeDeps({ fetchContent });
+    const { store } = createFakeStore({ inputType: "url", inputText });
+    const result = await runInvestigation("inv-1", deps, store);
+    expect(result.finalStatus).toBe("failed");
+    expect(result.finalStage).toBe("EXTRACTING_CONTENT");
+    expect(calls.extractClaimsCalls).toBe(0);
+    expect(calls.searchCalls).toBe(0);
+    return result;
+  }
+
+  it("INVALID_URL: a value that is not an openable public link is named explicitly", async () => {
+    const { deps, calls } = createFakeDeps();
+    const { store } = createFakeStore({ inputType: "url", inputText: "not a link at all" });
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.failureCode).toBe("INVALID_URL");
+    expect(result.errorMessage).toContain("public web page link");
+    expect(result.errorMessage).toContain("paste the opportunity text");
+    // Rejected before any request or AI spend
+    expect(calls.fetchContentCalls).toBe(0);
+    expect(calls.extractClaimsCalls).toBe(0);
+    expect(result.finalStage).toBe("NORMALIZING");
+  });
+
+  it("ACCESS_BLOCKED: a 403 is reported as blocked access, not as a dead link", async () => {
+    const result = await runIntoFailure("https://example.com/page", async () => {
+      throw new WebFetchError("ACCESS_BLOCKED", "The page responded with status 403", 403);
+    });
+
+    expect(result.failureCode).toBe("ACCESS_BLOCKED");
+    expect(result.errorMessage).toContain("blocked automated access");
+    expect(result.errorMessage).toContain("paste its text");
+  });
+
+  it("UNSUPPORTED_CONTENT: an unanalysable content type says so and offers a next step", async () => {
+    const result = await runIntoFailure("https://example.com/brief.pdf", async () => {
+      throw new WebFetchError("UNSUPPORTED_CONTENT_TYPE", "The page is not an HTML or text document");
+    });
+
+    expect(result.failureCode).toBe("UNSUPPORTED_CONTENT");
+    expect(result.errorMessage).toContain("content type");
+    expect(result.errorMessage).toContain("upload the document as an image or PDF");
+  });
+
+  it("EXTRACTION_FAILED: a reachable page with no readable text is named", async () => {
+    const result = await runIntoFailure("https://example.com/app", async (url) => ({
+      ...fixtureWebContent(url),
+      text: "JavaScript is required.",
+    }));
+
+    expect(result.failureCode).toBe("EXTRACTION_FAILED");
+    expect(result.errorMessage).toContain("could not extract readable content");
+  });
+
+  it("EMPTY_CONTENT: a page that returned no text at all is named", async () => {
+    const result = await runIntoFailure("https://example.com/blank", async (url) => ({
+      ...fixtureWebContent(url),
+      text: "   \n  ",
+    }));
+
+    expect(result.failureCode).toBe("EMPTY_CONTENT");
+    expect(result.errorMessage).toContain("no usable evidence text");
+  });
+
+  it("REDIRECTED is not a failure: a same-domain redirect still completes normally", async () => {
+    const { deps, calls } = createFakeDeps({
+      fetchContent: async (url) => ({
+        ...fixtureWebContent(url),
+        finalUrl: "https://example.com/scholarship?session=1",
+      }),
+    });
+    const { store, updates } = createFakeStore({
+      inputType: "url",
+      inputText: "https://example.com/scholarship",
+    });
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("complete");
+    expect(result.failureCode).toBeNull();
+    // Redirect information is preserved, and nothing is reported as changed
+    // domain — the existing redirect logic owns that judgement.
+    const persisted = updates.find((patch) => patch.finalUrl !== undefined);
+    expect(persisted).toMatchObject({
+      originalUrl: "https://example.com/scholarship",
+      finalUrl: "https://example.com/scholarship?session=1",
+      domainChanged: false,
+    });
+    expect(calls.fetchUrls.filter((url) => url === "https://example.com/scholarship")).toHaveLength(1);
+  });
+
+  it("a cross-domain redirect stays an investigation signal, never an error", async () => {
+    const { deps } = createFakeDeps({
+      fetchContent: async (url) => ({
+        ...fixtureWebContent(url),
+        originalUrl: "https://apply.example.org/hackathon",
+        finalUrl: "https://hackathon.example.net/apply",
+        originalDomain: "example.org",
+        finalDomain: "example.net",
+        domainChanged: true,
+      }),
+    });
+    const { store, updates } = createFakeStore({
+      inputType: "url",
+      inputText: "https://apply.example.org/hackathon",
+    });
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    // Redirected pages are investigated, not refused — the destination is
+    // preserved and the existing redirect risk logic judges it (→ CAUTION here,
+    // never a failed investigation and never a content-failure category).
+    expect(result.finalStatus).toBe("complete");
+    expect(result.failureCode).toBeNull();
+    expect(updates.some((patch) => patch.domainChanged === true)).toBe(true);
+  });
+});
+
+/* ─── First-party organization page: end-to-end regression ────────────────── */
+
+describe("executor — first-party page with a free registration", () => {
+  /** Three ordinary third-party discoveries — no government/academic among them. */
+  const THIRD_PARTY_SEARCH = async (): Promise<SearchOutput> => ({
+    query: "q",
+    results: [
+      {
+        title: "Community roundup",
+        url: "https://news.example.com/hackathon",
+        snippet: "Round-up of the community hackathon, noting entry is free.",
+      },
+      {
+        title: "Student write-up",
+        url: "https://writeup.example.net/post",
+        snippet: "Attendees describe an event with no cost to join.",
+      },
+    ],
+  });
+
+  function hackathonClaims(feeClaimText: string): ExtractClaimsOutput {
+    return {
+      claims: [
+        { text: feeClaimText, type: "fee", importance: "critical" },
+        {
+          text: "The AI Hackathon is organized by Example Community Network",
+          type: "organization",
+          importance: "critical",
+        },
+      ],
+    };
+  }
+
+  function runFees(feeClaimText: string) {
+    const { deps, calls } = createFakeDeps({
+      search: THIRD_PARTY_SEARCH,
+      extractClaims: async () => hackathonClaims(feeClaimText),
+    });
+    const { store, decisions, insertedSources } = createFakeStore({
+      inputType: "url",
+      inputText: "https://hackathon.example.org/apply",
+    });
+    return { deps, calls, store, decisions, insertedSources };
+  }
+
+  it("a negated fee statement does not make the organization's own page HIGH_RISK", async () => {
+    const { deps, calls, store, decisions, insertedSources } = runFees(
+      "Registration and participation in the AI Hackathon are completely free of charge",
+    );
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("complete");
+    // The submitted .org page is first-party: no government/academic source is
+    // required for its own confirmation to count as authoritative.
+    expect(insertedSources[0]).toMatchObject({
+      sourceType: "submitted",
+      domain: "hackathon.example.org",
+    });
+    expect(result.verdict).toBe("VERIFIED");
+
+    const reasons = decisions[0]!.reasons;
+    expect(reasons.some((reason) => reason.includes("requests a payment"))).toBe(false);
+    expect(reasons).toContain(
+      "Official source confirms key claims: hackathon.example.org.",
+    );
+    // Same credit contract as any other URL investigation
+    expect(calls.extractClaimsCalls).toBe(1);
+    expect(calls.analyzeEvidenceCalls).toBe(1);
+    expect(calls.fetchContentCalls).toBeLessThanOrEqual(4);
+  });
+
+  it("an ordinary third-party .com/.net page alone is still not authoritative", async () => {
+    // Identical investigation minus the submitted page (text input): the same
+    // three claims can then never reach VERIFIED on third-party sources only.
+    const { deps, calls } = createFakeDeps({
+      search: THIRD_PARTY_SEARCH,
+      extractClaims: async () =>
+        hackathonClaims("Registration and participation are completely free of charge"),
+    });
+    const { store, insertedSources } = createFakeStore();
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("complete");
+    expect(insertedSources.some((source) => source.sourceType === "submitted")).toBe(false);
+    expect(result.verdict).not.toBe("VERIFIED");
+  });
+
+  it("a genuine payment demand on the same first-party page still reaches HIGH_RISK", async () => {
+    const { deps, store, decisions } = runFees(
+      "A registration fee of Rs 5,000 is required to confirm your seat",
+    );
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("complete");
+    // The only difference from the passing case above is an unnegated demand:
+    // payment detection is context-aware, not disabled.
+    expect(result.verdict).toBe("HIGH_RISK");
+    expect(decisions[0]!.reasons.some((reason) => reason.includes("requests a payment"))).toBe(
+      true,
+    );
   });
 });
 
@@ -713,7 +1067,7 @@ describe("executor — provider failures", () => {
     expect(calls.searchCalls).toBe(1); // no retries
   });
 
-  it("continues honestly when evidence analysis fails — no invented evidence", async () => {
+  it("fails honestly when evidence analysis fails — no invented website verdict", async () => {
     const { deps, calls } = createFakeDeps({
       analyzeEvidence: async () => {
         throw new AIError("AI_MALFORMED_OUTPUT", "Gemini returned invalid JSON");
@@ -723,11 +1077,12 @@ describe("executor — provider failures", () => {
 
     const result = await runInvestigation("inv-1", deps, store);
 
-    // The investigation still completes — with an honest UNVERIFIED verdict
-    expect(result.finalStatus).toBe("complete");
+    expect(result.finalStatus).toBe("failed");
+    expect(result.finalStage).toBe("ANALYZING_EVIDENCE");
     expect(result.evidenceCount).toBe(0);
-    expect(result.verdict).toBe("UNVERIFIED");
-    expect(decisions[0]?.verdict).toBe("UNVERIFIED");
+    expect(result.verdict).toBeNull();
+    expect(result.errorMessage).toContain("Trustlify service issue");
+    expect(decisions).toHaveLength(0);
     expect(calls.analyzeEvidenceCalls).toBe(1); // exactly one attempt, no retry
   });
 
@@ -808,7 +1163,7 @@ describe("executor — fabricated excerpts are never trusted", () => {
     expect(result.verdict).toBe("UNVERIFIED");
   });
 
-  it("rejects neutral items carrying fabricated excerpts entirely", async () => {
+  it("fails when every evidence item is rejected instead of calling the website UNVERIFIED", async () => {
     const { deps } = createFakeDeps({
       analyzeEvidence: async (input) => ({
         evidence: [
@@ -827,9 +1182,12 @@ describe("executor — fabricated excerpts are never trusted", () => {
 
     const result = await runInvestigation("inv-1", deps, store);
 
-    expect(result.finalStatus).toBe("complete");
+    expect(result.finalStatus).toBe("failed");
+    expect(result.finalStage).toBe("ANALYZING_EVIDENCE");
     expect(insertedEvidence).toHaveLength(0);
     expect(result.evidenceCount).toBe(0);
+    expect(result.verdict).toBeNull();
+    expect(result.errorMessage).toContain("Trustlify service issue");
   });
 });
 
@@ -859,11 +1217,13 @@ describe("safeFailureMessage", () => {
     expect(message).toContain("Web search failed");
   });
 
-  it("maps web fetch errors to a safe message", () => {
+  it("maps web fetch errors to a safe, specific message", () => {
     const message = safeFailureMessage(
       new WebFetchError("PRIVATE_ADDRESS", "host resolves to 10.0.0.1"),
     );
-    expect(message).toContain("could not be fetched safely");
+    // Specific category (the address is not a public page) …
+    expect(message).toContain("public web page link");
+    // … and the resolved internal address still never reaches the user.
     expect(message).not.toContain("10.0.0.1");
   });
 

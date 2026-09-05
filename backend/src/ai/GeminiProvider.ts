@@ -47,6 +47,9 @@ import type { StudentMatch } from "../types/investigation.js";
 
 const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
 const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+/** One retry only: resilience for temporary outages without unbounded spend. */
+export const MAX_GEMINI_REQUEST_ATTEMPTS = 2;
+const DEFAULT_GEMINI_RETRY_DELAY_MS = 250;
 
 const CLAIM_TYPES = [
   "organization",
@@ -82,6 +85,17 @@ export const extractClaimsResponseSchema = z.object({
     .min(1),
 });
 
+/**
+ * Evidence-analysis response contract.
+ *
+ * The minimum matters as much as the maximum. The analysis prompt asks for one
+ * item per relevant (claim, source) pair and accepts 'insufficient' verdicts, so
+ * a completed pass over several claims and passages can always name at least one
+ * relationship. `evidence: []` therefore does not mean "the page is unverified" —
+ * it means the analysis did not happen — and it is rejected here as malformed
+ * output (mirroring the claim-extraction minimum) instead of being accepted as a
+ * successful response that the pipeline would have to report as no evidence.
+ */
 export const analyzeEvidenceResponseSchema = z.object({
   evidence: z
     .array(
@@ -94,6 +108,7 @@ export const analyzeEvidenceResponseSchema = z.object({
         confidence: z.enum(EVIDENCE_CONFIDENCE),
       }),
     )
+    .min(1)
     .max(60),
 });
 
@@ -197,6 +212,37 @@ export function extractApiErrorMessage(body: unknown): string {
 }
 
 /**
+ * Classify a rejected transport request without retaining raw socket details.
+ * Native fetch errors can include hostnames and proxy details, so callers get
+ * only a stable, safe category while the underlying cause stays private.
+ */
+export function describeGeminiTransportFailure(error: unknown): string {
+  const record = asRecord(error);
+  const name = typeof record?.name === "string" ? record.name : "";
+  const cause = asRecord(record?.cause);
+  const causeCode = typeof cause?.code === "string" ? cause.code : "";
+
+  if (
+    name === "AbortError" ||
+    name === "TimeoutError" ||
+    causeCode === "UND_ERR_CONNECT_TIMEOUT" ||
+    causeCode === "UND_ERR_HEADERS_TIMEOUT" ||
+    causeCode === "UND_ERR_BODY_TIMEOUT"
+  ) {
+    return "Gemini request timed out";
+  }
+
+  if (
+    name === "TypeError" ||
+    ["ECONNREFUSED", "ECONNRESET", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET"].includes(causeCode)
+  ) {
+    return "Gemini network request could not be completed";
+  }
+
+  return "Gemini request could not be completed";
+}
+
+/**
  * Map a Gemini HTTP error status/body to a safe AIError.
  * Never includes the API key or the full request URL.
  */
@@ -235,6 +281,16 @@ export function mapGeminiHttpError(status: number, body: unknown): AIError {
     "AI_REQUEST_FAILED",
     `Gemini request failed with status ${status}${apiMessage ? `: ${apiMessage}` : ""}`,
     status,
+  );
+}
+
+/** Transient provider failures safe for one bounded retry before persistence. */
+export function isTransientGeminiError(error: unknown): boolean {
+  if (!(error instanceof AIError)) return false;
+  if (error.code === "AI_RATE_LIMITED") return true;
+  return (
+    error.code === "AI_REQUEST_FAILED" &&
+    (error.httpStatus === undefined || [500, 502, 503, 504].includes(error.httpStatus))
   );
 }
 
@@ -323,7 +379,10 @@ export function parseGeminiResponseBody(body: unknown): ExtractClaimsOutput {
 
 /**
  * Parse and validate a Gemini generateContent response body against the
- * evidence-analysis schema.
+ * evidence-analysis schema. Throws AIError("AI_MALFORMED_OUTPUT") when the
+ * response is blocked, empty, non-JSON, schema-invalid, or reports zero
+ * evidence items — an analysis that produced nothing is a failed analysis,
+ * never a verdict about the investigated page.
  */
 export function parseAnalyzeEvidenceResponseBody(body: unknown): AnalyzeEvidenceOutput {
   const text = extractResponseText(body);
@@ -447,6 +506,8 @@ export interface GeminiProviderConfig {
   model?: string;
   /** Overrides the Gemini REST base URL (used by tests and proxies). */
   baseUrl?: string;
+  /** Overrides the short transient-failure retry delay (tests use zero). */
+  retryDelayMs?: number;
 }
 
 /** One Gemini content part (text or inline file payload). */
@@ -457,12 +518,14 @@ type GeminiPart =
 export class GeminiProvider implements AIProvider {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly retryDelayMs: number;
   public readonly model: string;
 
   constructor(config: GeminiProviderConfig = {}) {
     this.apiKey = config.apiKey ?? env.GEMINI_API_KEY ?? "";
     this.model = (config.model ?? env.GEMINI_MODEL ?? "") || DEFAULT_GEMINI_MODEL;
     this.baseUrl = (config.baseUrl ?? DEFAULT_GEMINI_BASE_URL).replace(/\/$/, "");
+    this.retryDelayMs = Math.max(0, config.retryDelayMs ?? DEFAULT_GEMINI_RETRY_DELAY_MS);
   }
 
   /**
@@ -540,10 +603,28 @@ export class GeminiProvider implements AIProvider {
   }
 
   /**
-   * Perform a single Gemini generateContent request.
-   * The API key travels in the x-goog-api-key header — never in the URL.
+   * Perform a Gemini request with one bounded retry for transient provider or
+   * transport failures. Both callers reach this before persisting any claims
+   * or evidence, so a retry cannot duplicate database records.
    */
   private async request(requestBody: unknown): Promise<unknown> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_GEMINI_REQUEST_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.requestOnce(requestBody);
+      } catch (error) {
+        lastError = error;
+        if (!isTransientGeminiError(error) || attempt === MAX_GEMINI_REQUEST_ATTEMPTS) {
+          throw error;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs * attempt));
+      }
+    }
+    throw lastError;
+  }
+
+  /** One wire request. The API key travels only in x-goog-api-key. */
+  private async requestOnce(requestBody: unknown): Promise<unknown> {
     let response: Response;
     try {
       response = await fetch(
@@ -557,9 +638,9 @@ export class GeminiProvider implements AIProvider {
           body: JSON.stringify(requestBody),
         },
       );
-    } catch {
-      // Network failure — never include the URL or key in the message
-      throw new AIError("AI_REQUEST_FAILED", "Gemini request could not be completed");
+    } catch (error) {
+      // Transport failure — never include the URL, key, hostname, or socket detail.
+      throw new AIError("AI_REQUEST_FAILED", describeGeminiTransportFailure(error));
     }
 
     if (!response.ok) {

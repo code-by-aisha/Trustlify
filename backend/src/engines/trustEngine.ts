@@ -29,11 +29,27 @@
  *
  *   5. UNVERIFIED (fallback) — never force certainty.
  *
+ * ─── AUTHORITY MODEL (spec 27) ────────────────────────────────────────────
+ *
+ *   A source satisfies the authority gate when it is either:
+ *     A/B. classified 'government' or 'academic', OR
+ *     C.   first-party to this investigation — the page the user submitted
+ *          ('submitted'), or a source on that submitted/final host or one of
+ *          its subdomains (boundary-safe host match, never substring match).
+ *
+ *   A TLD never confers authority on its own: '.org', '.com' and '.io' hosts
+ *   stay non-authoritative unless they ARE this investigation's first party.
+ *   Authority decides WHICH SOURCES MAY COUNT — never what counts as evidence:
+ *   the supporting relation itself still comes from analyzed source content.
+ *   (The risk engine's 'weak_source_authority' is a different question — it
+ *   asks whether any INDEPENDENT government/academic source exists, which a
+ *   first-party page by definition cannot answer.)
+ *
  * ─── TRUST SCORE (spec 28) — 0..100 explanation aid, not proof ────────────
  *
  *   base                                                                    50
  *   +8   per supported critical claim                               (max +24)
- *   +10  authoritative (government/academic) support exists
+ *   +10  authoritative (government/academic/first-party) support exists
  *   +5   ≥2 independent domains support critical claims
  *   -10  per critical claim that is 'unsupported'
  *   -15  any critical claim 'conflicting'
@@ -98,6 +114,13 @@ export interface TrustEngineInput {
   domainChanged: boolean;
   originalDomain: string | null;
   finalDomain: string | null;
+  /**
+   * Hostnames that ARE this investigation's first party: the host the user
+   * submitted and the host it finally resolved to. Absent or empty when no page
+   * was submitted, in which case only government/academic sources can be
+   * authoritative — exactly the previous behavior.
+   */
+  firstPartyDomains?: string[];
 }
 
 export interface TrustDecision {
@@ -117,6 +140,92 @@ const RECOMMENDED_ACTIONS: Record<Verdict, string> = {
 
 function isAuthoritative(sourceType: string): boolean {
   return sourceType === "government" || sourceType === "academic";
+}
+
+/** Hostname form used for comparison: trimmed, lowercase, no leading 'www.'. */
+function normalizeHost(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase().replace(/^www\./, "");
+}
+
+/**
+ * Boundary-safe host match: `host` is `base` itself or a genuine subdomain of
+ * it. Deliberately NOT substring matching — 'evil-example.org' must never
+ * match a first party of 'example.org'.
+ */
+function isHostOrSubdomain(host: string, base: string): boolean {
+  return host === base || host.endsWith(`.${base}`);
+}
+
+/**
+ * First-party relationship to THIS investigation: the page the user submitted,
+ * or any source sitting on the submitted/final host (or a subdomain of it).
+ * A third-party page that merely mentions the organization never matches.
+ */
+function isFirstParty(
+  source: Pick<TrustEngineSource, "domain" | "sourceType">,
+  input: Pick<TrustEngineInput, "firstPartyDomains">,
+): boolean {
+  if (source.sourceType === "submitted") return true;
+  const host = normalizeHost(source.domain);
+  if (!host) return false;
+  const ownHosts = (input.firstPartyDomains ?? [])
+    .map(normalizeHost)
+    .filter(Boolean);
+  return ownHosts.some((base) => isHostOrSubdomain(host, base));
+}
+
+/**
+ * The authority gate: government/academic, or first-party to this
+ * investigation. Widening WHICH SOURCES MAY COUNT as authoritative does not
+ * widen what counts as evidence — a supporting relation must still exist.
+ */
+function hasAuthority(
+  source: Pick<TrustEngineSource, "domain" | "sourceType">,
+  input: Pick<TrustEngineInput, "firstPartyDomains">,
+): boolean {
+  return isAuthoritative(source.sourceType) || isFirstParty(source, input);
+}
+
+/**
+ * First-party relationship to THIS investigation: the page the user submitted,
+ * or any source sitting on the submitted/final host (or a subdomain of it).
+ * A third-party page that merely mentions the organization never matches.
+ *
+ * Exported so the risk layer and the executor use ONE definition of
+ * first-party instead of re-deriving it from hostnames in several places.
+ */
+export function isFirstPartySource(
+  source: Pick<TrustEngineSource, "domain" | "sourceType">,
+  firstPartyDomains?: string[],
+): boolean {
+  return isFirstParty(source, { firstPartyDomains });
+}
+
+/**
+ * The authority gate, exposed for callers outside this engine (the executor
+ * feeds the same definition to the risk signals). Government/academic, or
+ * first-party to this investigation — never a bare TLD.
+ */
+export function isAuthoritativeSource(
+  source: Pick<TrustEngineSource, "domain" | "sourceType">,
+  firstPartyDomains?: string[],
+): boolean {
+  return hasAuthority(source, { firstPartyDomains });
+}
+
+/** Authoritative sources that actually carry supporting evidence. */
+function authoritativeSupportSources(
+  input: Pick<TrustEngineInput, "sources" | "evidence" | "firstPartyDomains">,
+): TrustEngineSource[] {
+  const supportedSourceIds = new Set(
+    input.evidence
+      .filter((item) => item.relation === "supports")
+      .map((item) => item.sourceId),
+  );
+  return input.sources.filter(
+    (source) =>
+      hasAuthority(source, input) && supportedSourceIds.has(source.id),
+  );
 }
 
 function signal(signals: RiskSignal[], code: string): boolean {
@@ -211,15 +320,7 @@ function calculateScore(input: TrustEngineInput, verdict: Verdict): number {
   const unsupported = critical.filter((claim) => claim.status === "unsupported");
 
   const sourceById = new Map(input.sources.map((source) => [source.id, source]));
-  const supportedSourceIds = new Set(
-    input.evidence
-      .filter((item) => item.relation === "supports")
-      .map((item) => item.sourceId),
-  );
-  const authoritativeSupport = input.sources.some(
-    (source) =>
-      isAuthoritative(source.sourceType) && supportedSourceIds.has(source.id),
-  );
+  const authoritativeSupport = authoritativeSupportSources(input).length > 0;
   const supportDomains = new Set(
     input.evidence
       .filter((item) => item.relation === "supports")
@@ -255,17 +356,9 @@ const MAX_REASONS = 8;
 function buildReasons(input: TrustEngineInput): string[] {
   const reasons: string[] = [];
   const critical = input.claims.filter((claim) => claim.importance === "critical");
-  const supportedSourceIds = new Set(
-    input.evidence
-      .filter((item) => item.relation === "supports")
-      .map((item) => item.sourceId),
+  const authoritativeDomains = authoritativeSupportSources(input).map(
+    (source) => source.domain,
   );
-  const authoritativeDomains = input.sources
-    .filter(
-      (source) =>
-        isAuthoritative(source.sourceType) && supportedSourceIds.has(source.id),
-    )
-    .map((source) => source.domain);
 
   // Risk and conflict reasons first — most important to a decision maker
   // (weak_source_authority last: it is the mildest signal and only matters
@@ -343,15 +436,7 @@ export function calculateTrustDecision(input: TrustEngineInput): TrustDecision {
     (claim) => claim.status === "insufficient" || claim.status === "unsupported",
   );
 
-  const supportedSourceIds = new Set(
-    input.evidence
-      .filter((item) => item.relation === "supports")
-      .map((item) => item.sourceId),
-  );
-  const authoritativeSupport = input.sources.some(
-    (source) =>
-      isAuthoritative(source.sourceType) && supportedSourceIds.has(source.id),
-  );
+  const authoritativeSupport = authoritativeSupportSources(input).length > 0;
 
   const verdict = decideVerdict(input, {
     criticalClaims: critical,

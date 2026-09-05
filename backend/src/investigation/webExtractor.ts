@@ -18,6 +18,12 @@
  *   - supported content types  (text/html, XHTML, text/plain)
  *   - maximum extracted chars  (URL_MAX_CONTENT_CHARS) → contentTruncated
  *
+ * Failure honesty (spec 33, surgical fix #2): every way a URL can fail is
+ * mapped into ONE explicit `ContentFailureCode` with a user-facing message that
+ * says what happened, why, and what to do next — never a vague pipeline error.
+ * A redirect is NOT a failure: it is preserved as the REDIRECTED outcome and
+ * judged by the existing redirect/risk logic downstream.
+ *
  * ⚠ UNTRUSTED CONTENT BOUNDARY (spec 12): everything fetched here is inert
  * string data. It is never evaluated or executed; downstream it is stored and
  * fenced as evidence data inside the Gemini prompt.
@@ -41,13 +47,124 @@ export class WebFetchError extends Error {
       | "PRIVATE_ADDRESS"
       | "TOO_MANY_REDIRECTS"
       | "HTTP_ERROR"
+      | "ACCESS_BLOCKED"
       | "UNSUPPORTED_CONTENT_TYPE"
       | "FETCH_FAILED"
       | "TIMEOUT",
     message: string,
+    /** HTTP status, when the failure came from a real response. Kept as a
+     *  NUMBER (never free text) so failure messages can quote the status without
+     *  echoing anything untrusted. */
+    public readonly status?: number,
   ) {
     super(message);
     this.name = "WebFetchError";
+  }
+}
+
+/* ─── Content failure taxonomy (spec 33) ──────────────────────────────────── */
+
+/**
+ * The ways an investigation can fail to obtain usable page content. These are
+ * investigation-level categories, mapped from the transport-level
+ * `WebFetchError` codes below — deliberately small, and reusing the existing
+ * error structure instead of a new hierarchy.
+ */
+export const CONTENT_FAILURE_CODES = [
+  "INVALID_URL",
+  "FETCH_FAILED",
+  "ACCESS_BLOCKED",
+  "EXTRACTION_FAILED",
+  "EMPTY_CONTENT",
+  "UNSUPPORTED_CONTENT",
+] as const;
+
+export type ContentFailureCode = (typeof CONTENT_FAILURE_CODES)[number];
+
+/**
+ * Full outcome of the content-extraction step. `REDIRECTED` and `SUCCESS` are
+ * NOT failures — a redirect stays an investigation signal handled by the risk
+ * engine, and its original/final URLs are preserved as usual.
+ */
+export type ContentOutcome = "SUCCESS" | "REDIRECTED" | ContentFailureCode;
+
+export function isContentFailureCode(outcome: ContentOutcome): outcome is ContentFailureCode {
+  return (CONTENT_FAILURE_CODES as readonly string[]).includes(outcome);
+}
+
+export interface ContentFailure {
+  code: ContentFailureCode;
+  /** HTTP status, when one was actually received. */
+  status?: number;
+  /** Trustlify-authored clarification only — never caller/provider text. */
+  reason?: string;
+}
+
+/** WHAT happened (+why), then WHAT the user can do next. */
+const CONTENT_FAILURE_MESSAGES: Record<ContentFailureCode, { what: string; next: string }> = {
+  INVALID_URL: {
+    what: "That address is not a public web page link Trustlify can open (only http(s) pages are supported)",
+    next: "Check the link, or paste the opportunity text here instead.",
+  },
+  FETCH_FAILED: {
+    what: "Trustlify could not reach this page, so its content could not be read",
+    next: "Open the link in your browser to confirm it is live, then start the investigation again.",
+  },
+  ACCESS_BLOCKED: {
+    what: "The website blocked automated access (or requires a login), so Trustlify could not verify its contents",
+    next: "Open the page in your own browser and paste its text here to investigate it.",
+  },
+  EXTRACTION_FAILED: {
+    what: "This page was reachable, but Trustlify could not extract readable content from it — the details appear to be rendered by scripts, images, or a form",
+    next: "Paste the opportunity text here, or link a page that shows the details as plain text.",
+  },
+  EMPTY_CONTENT: {
+    what: "The page was reached but contained no usable evidence text",
+    next: "Try another link for the same opportunity, or paste the opportunity text here.",
+  },
+  UNSUPPORTED_CONTENT: {
+    what: "This URL points to a content type the current investigation pipeline does not support yet — Trustlify reads web pages and plain text",
+    next: "Paste the opportunity text here, or upload the document as an image or PDF instead.",
+  },
+};
+
+/**
+ * Compose the user-facing explanation of a content failure: what happened,
+ * why, and what to do next. Built only from this file's fixed strings plus a
+ * numeric status / curated reason, so no provider internals or addresses leak.
+ */
+export function describeContentFailure(failure: ContentFailure): string {
+  const entry = CONTENT_FAILURE_MESSAGES[failure.code];
+  const detail =
+    failure.status !== undefined
+      ? `the site responded with status ${failure.status}`
+      : failure.reason;
+  const what = detail ? `${entry.what} (${detail})` : entry.what;
+  return `${what}. ${entry.next}`;
+}
+
+/** Map a transport-level fetch failure onto the investigation taxonomy. */
+export function contentFailureFromFetchError(error: WebFetchError): ContentFailure {
+  switch (error.code) {
+    case "URL_REJECTED":
+      return { code: "INVALID_URL" };
+    case "PRIVATE_ADDRESS":
+      // SSRF rejection: the address is not a public page. The resolved address
+      // itself is deliberately never repeated to users.
+      return { code: "INVALID_URL", reason: "private and internal network addresses are never opened" };
+    case "ACCESS_BLOCKED":
+      return { code: "ACCESS_BLOCKED", status: error.status };
+    case "UNSUPPORTED_CONTENT_TYPE":
+      return { code: "UNSUPPORTED_CONTENT" };
+    case "TIMEOUT":
+      return { code: "FETCH_FAILED", reason: "the request timed out" };
+    case "TOO_MANY_REDIRECTS":
+      return { code: "FETCH_FAILED", reason: "the page kept redirecting without settling on a destination" };
+    case "HTTP_ERROR":
+      return { code: "FETCH_FAILED", status: error.status };
+    case "FETCH_FAILED":
+    default:
+      return { code: "FETCH_FAILED" };
   }
 }
 
@@ -84,6 +201,33 @@ export interface FetchedWebContent {
   /** Honest publication date parsed from page metadata — null when absent. */
   publishedAt: string | null;
   contentType: string;
+}
+
+/**
+ * How little extracted text still counts as usable evidence. Below BOTH bounds
+ * the page was reached but said nothing readable (JS shell, empty frame, form
+ * wrapper) — an EXTRACTION_FAILED rather than a silently thin investigation.
+ * Token counting is script-agnostic; the character bound keeps short but real
+ * pages (a one-line announcement) on the success path.
+ */
+const MIN_READABLE_CONTENT_CHARS = 80;
+const MIN_READABLE_TOKENS = 12;
+
+/**
+ * Classify the outcome of a completed fetch. Never throws, makes no request,
+ * and treats a redirect as success — the redirect information itself is already
+ * carried by original/final URL + domainChanged.
+ */
+export function contentOutcomeOf(fetched: FetchedWebContent): ContentOutcome {
+  const collapsed = fetched.text.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return "EMPTY_CONTENT";
+
+  const tokens = collapsed.split(" ").length;
+  if (collapsed.length < MIN_READABLE_CONTENT_CHARS && tokens < MIN_READABLE_TOKENS) {
+    return "EXTRACTION_FAILED";
+  }
+
+  return fetched.finalUrl === fetched.originalUrl ? "SUCCESS" : "REDIRECTED";
 }
 
 /* ─── Content type validation ─────────────────────────────────────────────── */
@@ -405,9 +549,13 @@ export async function fetchWebContent(
   }
 
   if (!response.ok) {
+    // 401/403/429 are access denials, not dead links — the difference decides
+    // whether the user should re-check the link or paste the text instead.
+    const blocked = response.status === 401 || response.status === 403 || response.status === 429;
     throw new WebFetchError(
-      "HTTP_ERROR",
+      blocked ? "ACCESS_BLOCKED" : "HTTP_ERROR",
       `The page responded with status ${response.status}`,
+      response.status,
     );
   }
 

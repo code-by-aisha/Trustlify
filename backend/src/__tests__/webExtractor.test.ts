@@ -10,7 +10,9 @@
  *     schemes, DNS-resolved private addresses, unresolvable hosts
  *   - Manual redirect following with full re-validation per hop (spec 08)
  *     and the redirect signal (spec 11)
- *   - HTTP errors and unsupported content types (spec 09)
+ *   - HTTP errors, access denials and unsupported content types (spec 09)
+ *   - the content failure taxonomy (spec 33): mapping transport codes to
+ *     investigation categories, and the WHAT + WHY + NEXT user message
  *   - HTML → readable text extraction (spec 10): noise stripped, entities
  *     decoded, structure preserved, truncation flagged
  *   - Honest publication-date parsing (only machine-readable metadata)
@@ -23,6 +25,13 @@ import {
   extractPublishedDate,
   isAcceptedContentType,
   WebFetchError,
+  CONTENT_FAILURE_CODES,
+  contentFailureFromFetchError,
+  contentOutcomeOf,
+  describeContentFailure,
+  isContentFailureCode,
+  type ContentFailureCode,
+  type FetchedWebContent,
   type FetchDeps,
 } from "../investigation/webExtractor.js";
 
@@ -254,6 +263,36 @@ describe("webExtractor — HTTP status and content type", () => {
     );
   });
 
+  it("separates an access denial from a dead link, keeping the status", async () => {
+    for (const status of [401, 403, 429]) {
+      const deps = pageDeps(
+        { "example.com": [PUBLIC_IP] },
+        () => new Response("Forbidden", { status }),
+      );
+      await expect(fetchWebContent("https://example.com/private", { deps })).rejects.toSatisfy(
+        (e: unknown) => {
+          expectCode(e, "ACCESS_BLOCKED");
+          expect((e as WebFetchError).status).toBe(status);
+          return true;
+        },
+      );
+    }
+  });
+
+  it("carries the numeric status on ordinary HTTP errors", async () => {
+    const deps = pageDeps(
+      { "example.com": [PUBLIC_IP] },
+      () => new Response("Gone", { status: 410 }),
+    );
+    await expect(fetchWebContent("https://example.com/gone", { deps })).rejects.toSatisfy(
+      (e: unknown) => {
+        expectCode(e, "HTTP_ERROR");
+        expect((e as WebFetchError).status).toBe(410);
+        return true;
+      },
+    );
+  });
+
   it("maps fetch failures with a TimeoutError name to TIMEOUT", async () => {
     const deps: FetchDeps = {
       dnsLookup: dnsFor({ "example.com": [PUBLIC_IP] }),
@@ -451,5 +490,156 @@ describe("isAcceptedContentType", () => {
     expect(isAcceptedContentType("application/pdf")).toBe(false);
     expect(isAcceptedContentType("image/png")).toBe(false);
     expect(isAcceptedContentType("")).toBe(false);
+  });
+});
+
+/* ─── Content failure taxonomy (spec 33, surgical fix #2) ──────────────────── */
+
+describe("webExtractor — content failure taxonomy", () => {
+  it("maps every transport code onto one of the six investigation categories", () => {
+    const mapped: Record<string, ContentFailureCode> = {
+      URL_REJECTED: contentFailureFromFetchError(new WebFetchError("URL_REJECTED", "x")).code,
+      PRIVATE_ADDRESS: contentFailureFromFetchError(
+        new WebFetchError("PRIVATE_ADDRESS", "x"),
+      ).code,
+      ACCESS_BLOCKED: contentFailureFromFetchError(
+        new WebFetchError("ACCESS_BLOCKED", "x", 403),
+      ).code,
+      UNSUPPORTED_CONTENT_TYPE: contentFailureFromFetchError(
+        new WebFetchError("UNSUPPORTED_CONTENT_TYPE", "x"),
+      ).code,
+      TIMEOUT: contentFailureFromFetchError(new WebFetchError("TIMEOUT", "x")).code,
+      TOO_MANY_REDIRECTS: contentFailureFromFetchError(
+        new WebFetchError("TOO_MANY_REDIRECTS", "x"),
+      ).code,
+      HTTP_ERROR: contentFailureFromFetchError(new WebFetchError("HTTP_ERROR", "x", 404)).code,
+      FETCH_FAILED: contentFailureFromFetchError(new WebFetchError("FETCH_FAILED", "x")).code,
+    };
+
+    expect(mapped).toEqual({
+      URL_REJECTED: "INVALID_URL",
+      PRIVATE_ADDRESS: "INVALID_URL",
+      ACCESS_BLOCKED: "ACCESS_BLOCKED",
+      UNSUPPORTED_CONTENT_TYPE: "UNSUPPORTED_CONTENT",
+      TIMEOUT: "FETCH_FAILED",
+      TOO_MANY_REDIRECTS: "FETCH_FAILED",
+      HTTP_ERROR: "FETCH_FAILED",
+      FETCH_FAILED: "FETCH_FAILED",
+    });
+    // Nothing outside the documented taxonomy can be produced
+    for (const code of Object.values(mapped)) {
+      expect(CONTENT_FAILURE_CODES).toContain(code);
+    }
+  });
+
+  it("keeps the received status and never echoes the transport message", () => {
+    const failure = contentFailureFromFetchError(
+      new WebFetchError("HTTP_ERROR", "connect ECONNREFUSED 10.0.0.1:5432", 404),
+    );
+    expect(failure.status).toBe(404);
+
+    const message = describeContentFailure(failure);
+    expect(message).toContain("could not reach this page"); // WHAT
+    expect(message).toContain("status 404"); // WHY (numeric only)
+    expect(message).toContain("Open the link in your browser"); // NEXT
+    expect(message).not.toContain("ECONNREFUSED");
+    expect(message).not.toContain("10.0.0.1");
+  });
+
+  it("explains each category as WHAT + NEXT without a generic failure line", () => {
+    const failures = [
+      { code: "INVALID_URL" as const },
+      { code: "ACCESS_BLOCKED" as const, status: 403 },
+      { code: "EXTRACTION_FAILED" as const },
+      { code: "EMPTY_CONTENT" as const },
+      { code: "UNSUPPORTED_CONTENT" as const },
+    ];
+    for (const failure of failures) {
+      const message = describeContentFailure(failure);
+      expect(message.length).toBeGreaterThan(40);
+      expect(message.toLowerCase()).not.toContain("something went wrong");
+      // A concrete next step follows the explanation
+      expect(message.split(". ").length).toBeGreaterThan(1);
+    }
+    expect(describeContentFailure({ code: "ACCESS_BLOCKED", status: 403 })).toContain(
+      "blocked automated access",
+    );
+    expect(describeContentFailure({ code: "EXTRACTION_FAILED" })).toContain(
+      "could not extract readable content",
+    );
+    expect(describeContentFailure({ code: "UNSUPPORTED_CONTENT" })).toContain(
+      "content type the current investigation pipeline does not support",
+    );
+  });
+
+  it("treats a redirect as a signal, not a failure category", () => {
+    expect(isContentFailureCode("REDIRECTED")).toBe(false);
+    expect(isContentFailureCode("SUCCESS")).toBe(false);
+    expect(isContentFailureCode("ACCESS_BLOCKED")).toBe(true);
+    expect(describeContentFailure({ code: "INVALID_URL" })).toContain("not a public web page link");
+  });
+});
+
+/* ─── contentOutcomeOf — readable content minima ───────────────────────────── */
+
+describe("contentOutcomeOf", () => {
+  function fetched(overrides: Partial<FetchedWebContent> = {}): FetchedWebContent {
+    return {
+      originalUrl: "https://example.org/a.html",
+      finalUrl: "https://example.org/a.html",
+      originalDomain: "example.org",
+      finalDomain: "example.org",
+      domainChanged: false,
+      title: "Page",
+      text: "The scholarship covers tuition, a monthly stipend, and travel for all selected students.",
+      contentTruncated: false,
+      publishedAt: null,
+      contentType: "text/html",
+      ...overrides,
+    };
+  }
+
+  it("reports SUCCESS for a reachable page with readable text", () => {
+    expect(contentOutcomeOf(fetched())).toBe("SUCCESS");
+  });
+
+  it("reports REDIRECTED (not a failure) when the final URL differs", () => {
+    const outcome = contentOutcomeOf(
+      fetched({
+        finalUrl: "https://example.org/a.html?session=1",
+        domainChanged: false,
+      }),
+    );
+    expect(outcome).toBe("REDIRECTED");
+    expect(isContentFailureCode(outcome)).toBe(false);
+  });
+
+  it("reports EMPTY_CONTENT when only whitespace came back", () => {
+    expect(contentOutcomeOf(fetched({ text: "   \n\t  " }))).toBe("EMPTY_CONTENT");
+    expect(contentOutcomeOf(fetched({ text: "" }))).toBe("EMPTY_CONTENT");
+  });
+
+  it("reports EXTRACTION_FAILED for a script shell with no readable text", () => {
+    expect(contentOutcomeOf(fetched({ text: "JavaScript is required." }))).toBe(
+      "EXTRACTION_FAILED",
+    );
+    expect(contentOutcomeOf(fetched({ text: "Loading…" }))).toBe("EXTRACTION_FAILED");
+  });
+
+  it("keeps short-but-real pages on the success path (either bound is enough)", () => {
+    // A one-line announcement long enough in characters…
+    expect(
+      contentOutcomeOf(
+        fetched({
+          text: "Applications for the 2026 fellowship are now open and will close on 30 September 2026.",
+        }),
+      ),
+    ).toBe("SUCCESS");
+    // … or short overall but rich in distinct tokens.
+    expect(
+      contentOutcomeOf(
+        fetched({ text: "Fund grant aid loan fee cost dates apply open close award stipend travel." }),
+      ),
+    ).toBe("SUCCESS");
   });
 });
