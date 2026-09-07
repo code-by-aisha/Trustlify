@@ -17,11 +17,15 @@
  *
  *   2. UNVERIFIED — critical evidence is insufficient: at least one critical
  *        claim is 'insufficient' or 'unsupported' (checked, but the critical
- *        support is absent), so certainty cannot be forced.
+ *        support is absent), so certainty cannot be forced. An authoritative
+ *        contradiction is handled explicitly by Rule 3 instead.
  *
  *   3. CAUTION    — reliable sources materially conflict: a critical claim is
- *        'conflicting' (credible support AND credible contradiction), or a
- *        risk signal flags a genuine concern while the core is verified.
+ *        'conflicting' (credible support AND credible contradiction), or an
+ *        authoritative source directly contradicts a critical claim. The
+ *        latter can indicate stale information; it is not fraud by itself.
+ *        A risk signal can also flag a genuine concern while the core is
+ *        verified.
  *
  *   4. VERIFIED   — every critical claim is supported by credible evidence,
  *        at least one by an authoritative source, and no material
@@ -230,6 +234,36 @@ function authoritativeSupportSources(
   );
 }
 
+/**
+ * A direct contradiction from a source that already satisfies the established
+ * authority model. Evidence reaches this engine only after its excerpt was
+ * verified by the investigator, so this is deliberately about source strength
+ * rather than adding a second, incompatible credibility hierarchy.
+ */
+function authoritativelyContradictedCriticalClaimIds(
+  input: Pick<TrustEngineInput, "claims" | "evidence" | "sources" | "firstPartyDomains">,
+): Set<string> {
+  const criticalIds = new Set(
+    input.claims
+      .filter((claim) => claim.importance === "critical")
+      .map((claim) => claim.id),
+  );
+  const sourceById = new Map(input.sources.map((source) => [source.id, source]));
+
+  return new Set(
+    input.evidence
+      .filter((item) => {
+        const source = sourceById.get(item.sourceId);
+        return (
+          item.relation === "contradicts" &&
+          criticalIds.has(item.claimId) &&
+          Boolean(source && hasAuthority(source, input))
+        );
+      })
+      .map((item) => item.claimId),
+  );
+}
+
 function signal(signals: RiskSignal[], code: string): boolean {
   return signals.some((entry) => entry.code === code && entry.present);
 }
@@ -254,6 +288,7 @@ function decideVerdict(
     criticalConflicting: TrustEngineClaim[];
     criticalContradicted: TrustEngineClaim[];
     criticalUnresolved: TrustEngineClaim[];
+    authoritativeCriticalContradiction: boolean;
     authoritativeSupport: boolean;
   },
 ): Verdict {
@@ -273,13 +308,18 @@ function decideVerdict(
   }
 
   // Rule 2 — UNVERIFIED: critical evidence is insufficient
-  if (facts.criticalUnresolved.length > 0) {
+  if (
+    facts.criticalUnresolved.length > 0 &&
+    !facts.authoritativeCriticalContradiction
+  ) {
     return "UNVERIFIED";
   }
 
   // Rule 3 — CAUTION: reliable sources materially conflict, or a genuine
   // risk concern flags a partially verified opportunity
-  const materialConflict = facts.criticalConflicting.length > 0;
+  const materialConflict =
+    facts.criticalConflicting.length > 0 ||
+    facts.authoritativeCriticalContradiction;
   const concernWithPartialSupport =
     facts.criticalSupported.length > 0 &&
     (suspiciousRedirect || identityMismatch || paymentRequest);
@@ -401,6 +441,16 @@ function buildReasons(input: TrustEngineInput): string[] {
     );
   }
 
+  const authoritativeContradictedIds = authoritativelyContradictedCriticalClaimIds(input);
+  for (const claim of critical) {
+    if (claim.status !== "contradicted" || !authoritativeContradictedIds.has(claim.id)) {
+      continue;
+    }
+    reasons.push(
+      `An authoritative source contradicts a critical claim: "${truncate(claim.text, 90)}". This may reflect changed or expired information; confirm the current details before acting.`,
+    );
+  }
+
   // Support reasons
   if (authoritativeDomains.length > 0) {
     reasons.push(
@@ -456,6 +506,8 @@ export function calculateTrustDecision(input: TrustEngineInput): TrustDecision {
   );
 
   const authoritativeSupport = authoritativeSupportSources(input).length > 0;
+  const authoritativeCriticalContradiction =
+    authoritativelyContradictedCriticalClaimIds(input).size > 0;
 
   const verdict = decideVerdict(input, {
     criticalClaims: critical,
@@ -463,6 +515,7 @@ export function calculateTrustDecision(input: TrustEngineInput): TrustDecision {
     criticalConflicting,
     criticalContradicted,
     criticalUnresolved,
+    authoritativeCriticalContradiction,
     authoritativeSupport,
   });
 

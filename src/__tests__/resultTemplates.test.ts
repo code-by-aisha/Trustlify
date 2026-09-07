@@ -12,6 +12,7 @@ import {
   SECTION_LABELS,
   currencyLabel,
   deadlineLabel,
+  expiredOpportunityContext,
   dimensionRows,
   eligibilityLabel,
   isRomanUrdu,
@@ -75,6 +76,16 @@ describe('spec sentences', () => {
         deadline: 'EXPIRED',
       }),
     ).toContain('Available deadline ke mutabiq application window close ho chuki hai.')
+  })
+
+  it('keeps a verified opportunity distinct from its closed application window', () => {
+    expect(expiredOpportunityContext('VERIFIED', 'EXPIRED', false)).toBe(
+      'Trust status: verified. Application status: closed — the recorded deadline has passed.',
+    )
+    expect(expiredOpportunityContext('VERIFIED', 'CURRENT', false)).toBeNull()
+    expect(expiredOpportunityContext('HIGH_RISK', 'EXPIRED', false)).toContain(
+      'not by itself a finding about authenticity',
+    )
   })
 })
 

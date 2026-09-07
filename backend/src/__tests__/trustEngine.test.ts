@@ -241,6 +241,82 @@ describe("trustEngine — verdict rules", () => {
     expect(decision.recommendedAction).toBe("Resolve the conflicting information before applying.");
   });
 
+  it("rule 3 — CAUTION: authoritative evidence directly contradicting a critical claim blocks VERIFIED", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [
+          {
+            id: "c1",
+            text: "Applications are open until September 30.",
+            type: "deadline",
+            importance: "critical",
+            status: "contradicted",
+          },
+        ],
+        evidence: [evidence("c1", "s4", "contradicts")],
+        sources: [COMMERCIAL_FIRST_PARTY],
+        firstPartyDomains: ["learning-platform.example.com"],
+      }),
+    );
+
+    expect(decision.verdict).toBe("CAUTION");
+    expect(decision.verdict).not.toBe("VERIFIED");
+    expect(decision.reasons.join(" ")).toContain("authoritative source contradicts");
+  });
+
+  it("keeps a critical contradiction from a weak source UNVERIFIED, not automatically HIGH_RISK", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "contradicted", "critical", "deadline")],
+        evidence: [evidence("c1", "s3", "contradicts")],
+        sources: [BLOG],
+      }),
+    );
+
+    expect(decision.verdict).toBe("UNVERIFIED");
+    expect(decision.verdict).not.toBe("HIGH_RISK");
+  });
+
+  it("keeps a non-critical contradiction on the existing verified critical-claim path", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [
+          claim("c1", "supported"),
+          claim("c2", "contradicted", "important", "deadline"),
+        ],
+        evidence: [evidence("c1", "s1"), evidence("c2", "s3", "contradicts")],
+        sources: [GOV, BLOG],
+      }),
+    );
+
+    expect(decision.verdict).toBe("VERIFIED");
+  });
+
+  it("treats an authoritative temporal contradiction as CAUTION, with currentness disclosed and no fraud verdict", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [
+          {
+            id: "c1",
+            text: "Applications are open until September 30.",
+            type: "deadline",
+            importance: "critical",
+            status: "contradicted",
+          },
+        ],
+        evidence: [evidence("c1", "s1", "contradicts")],
+        sources: [GOV],
+        currentness: "mixed",
+      }),
+    );
+
+    expect(decision.verdict).toBe("CAUTION");
+    expect(decision.verdict).not.toBe("HIGH_RISK");
+    expect(decision.reasons).toContain(
+      "The supporting sources mix recent and dated publications.",
+    );
+  });
+
   it("rule 3 — CAUTION: a risk concern flags a partially verified opportunity", () => {
     const decision = calculateTrustDecision(
       input({

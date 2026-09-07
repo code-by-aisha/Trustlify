@@ -24,6 +24,7 @@ import type {
 import {
   currencyLabel,
   deadlineLabel,
+  expiredOpportunityContext,
   eligibilityLabel,
   isRomanUrdu,
   outcomeLabel,
@@ -298,13 +299,18 @@ export default function InvestigationResult() {
 
   const inputPreview = truncate(investigation?.inputText ?? '', 120)
   const intel = investigation?.studentIntelligence ?? null
+  const roman = isRomanUrdu(profile.language)
+  const expiredContext = expiredOpportunityContext(
+    verdict,
+    intel?.currentness.opportunity.state,
+    roman,
+  )
   // Student steps are appended to the verdict's own action list, never replacing it
   const recommendedActions: string[] =
     intel?.recommendedActions?.length
       ? intel.recommendedActions
       : decision?.recommendedAction ?? []
 
-  const roman = isRomanUrdu(profile.language)
   const isStudentUser = String(profile.role ?? '').toLowerCase() === 'student'
   const sectionOrder = intel?.emphasis?.length
     ? intel.emphasis
@@ -416,6 +422,11 @@ export default function InvestigationResult() {
                 <p className="font-mono text-sm text-soft mb-4 max-w-lg leading-relaxed">
                   {decision?.explanation || style.blurb}
                 </p>
+                {expiredContext && (
+                  <div className="mb-4 rounded-lg border border-caution/30 bg-caution/[0.06] px-4 py-3 font-mono text-xs leading-relaxed text-caution max-w-2xl">
+                    {expiredContext}
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-6">
                   <div>
                     <div className="font-mono text-[10px] text-dim mb-1">CLAIMS</div>

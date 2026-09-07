@@ -118,6 +118,29 @@ export function deadlineLabel(state: DeadlineState, roman: boolean): string {
   return roman ? DEADLINE_LABEL[state].ru : DEADLINE_LABEL[state].en
 }
 
+/**
+ * A concise context line for the main verdict card. Trust/authenticity and
+ * application timing are separate computed facts: a passed deadline does not
+ * change an otherwise verified opportunity into a fraud finding.
+ */
+export function expiredOpportunityContext(
+  verdict: Verdict | null,
+  currency: OpportunityCurrencyState | null | undefined,
+  roman: boolean,
+): string | null {
+  if (currency !== 'EXPIRED') return null
+
+  if (verdict === 'VERIFIED') {
+    return roman
+      ? 'Trust status: sahi sabit. Application status: band — recorded deadline guzar chuki hai.'
+      : 'Trust status: verified. Application status: closed — the recorded deadline has passed.'
+  }
+
+  return roman
+    ? 'Recorded application deadline guzar chuki hai. Ye currentness status hai, authenticity ka faisla nahi.'
+    : 'The recorded application deadline has passed. This is a currentness status, not by itself a finding about authenticity.'
+}
+
 export function outcomeLabel(
   outcome: 'MATCHED' | 'MISSING' | 'UNKNOWN' | 'TIMING',
   roman: boolean,
