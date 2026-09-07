@@ -32,6 +32,11 @@ import { detectRiskSignals } from "../engines/riskEngine.js";
 const GOV: TrustEngineSource = { id: "s1", domain: "hec.gov.pk", sourceType: "government" };
 const ACAD: TrustEngineSource = { id: "s2", domain: "lums.edu.pk", sourceType: "academic" };
 const BLOG: TrustEngineSource = { id: "s3", domain: "blog.example.org", sourceType: "unknown" };
+const COMMERCIAL_FIRST_PARTY: TrustEngineSource = {
+  id: "s4",
+  domain: "learning-platform.example.com",
+  sourceType: "submitted",
+};
 
 function claim(
   id: string,
@@ -114,13 +119,12 @@ describe("riskEngine — detectRiskSignals", () => {
     expect(redirect?.detail).toContain("example.net");
   });
 
-  it("flags payment_request for fee claims and payment phrasing", () => {
-    const fee = detectRiskSignals({
+  it("flags only suspicious payment wording, not a fee topic alone", () => {
+    const ordinaryFee = detectRiskSignals({
       ...base,
       claims: [claim("c1", "pending", "critical", "fee")],
     });
-    expect(fee.find((s) => s.code === "payment_request")?.present).toBe(true);
-
+    expect(ordinaryFee.find((s) => s.code === "payment_request")?.present).toBe(false);
     const phrasing = detectRiskSignals({
       ...base,
       claims: [
@@ -130,12 +134,19 @@ describe("riskEngine — detectRiskSignals", () => {
     expect(phrasing.find((s) => s.code === "payment_request")?.present).toBe(true);
   });
 
-  it("flags weak_source_authority when no government/academic source exists", () => {
+  it("flags weak_source_authority only when government/academic and supported first-party evidence are both absent", () => {
     const weak = detectRiskSignals({ ...base, sourceTypes: ["unknown", "social"] });
     expect(weak.find((s) => s.code === "weak_source_authority")?.present).toBe(true);
 
     const strong = detectRiskSignals({ ...base, sourceTypes: ["government", "unknown"] });
     expect(strong.find((s) => s.code === "weak_source_authority")?.present).toBe(false);
+
+    const firstParty = detectRiskSignals({
+      ...base,
+      sourceTypes: ["submitted", "unknown"],
+      hasAuthoritativeSupport: true,
+    });
+    expect(firstParty.find((s) => s.code === "weak_source_authority")?.present).toBe(false);
   });
 
   it("flags identity_mismatch when an organization claim is contradicted", () => {
@@ -317,6 +328,55 @@ describe("trustEngine — verdict rules", () => {
         claims: [claim("c1", "supported", "supporting")],
         evidence: [evidence("c1", "s1")],
         sources: [GOV],
+      }),
+    );
+
+    expect(decision.verdict).toBe("UNVERIFIED");
+  });
+
+  it("verifies a generic commercial platform with no critical claims when authoritative entity evidence is supported", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [
+          {
+            id: "c1",
+            text: "Learning Platform provides online professional courses.",
+            type: "organization",
+            importance: "important",
+            status: "supported",
+          },
+          {
+            id: "c2",
+            text: "The platform offers a membership subscription discount.",
+            type: "fee",
+            importance: "important",
+            status: "supported",
+          },
+        ],
+        evidence: [evidence("c1", "s4"), evidence("c2", "s4")],
+        sources: [COMMERCIAL_FIRST_PARTY],
+        firstPartyDomains: ["learning-platform.example.com"],
+      }),
+    );
+
+    expect(decision.verdict).toBe("VERIFIED");
+  });
+
+  it("keeps a no-critical-claims investigation UNVERIFIED without supported authoritative entity evidence", () => {
+    const decision = calculateTrustDecision(
+      input({
+        claims: [
+          {
+            id: "c1",
+            text: "The platform offers a membership subscription discount.",
+            type: "fee",
+            importance: "important",
+            status: "supported",
+          },
+        ],
+        evidence: [evidence("c1", "s4")],
+        sources: [COMMERCIAL_FIRST_PARTY],
+        firstPartyDomains: ["learning-platform.example.com"],
       }),
     );
 
@@ -525,9 +585,7 @@ describe("riskEngine — authority model shared with the Trust Engine", () => {
     expect(isFirstPartySource({ domain: "", sourceType: "unknown" }, own)).toBe(false);
   });
 
-  it("weak_source_authority measures INDEPENDENT corroboration — a first-party page does not clear it", () => {
-    // Deliberate: the organization's own page can be an authoritative witness
-    // but is never outside confirmation, so scam detection keeps its teeth.
+  it("supported first-party evidence clears the authority warning for a commercial platform", () => {
     const result = detectRiskSignals({
       domainChanged: false,
       originalDomain: null,
@@ -536,8 +594,7 @@ describe("riskEngine — authority model shared with the Trust Engine", () => {
       sourceTypes: ["submitted", "unknown"],
       hasAuthoritativeSupport: true,
     });
-    expect(result.find((s) => s.code === "weak_source_authority")?.present).toBe(true);
-    // … while the organization claim itself IS officially confirmed (fix #1 gate)
+    expect(result.find((s) => s.code === "weak_source_authority")?.present).toBe(false);
     expect(
       result.find((s) => s.code === "missing_official_confirmation")?.present,
     ).toBe(false);
@@ -569,18 +626,47 @@ describe("riskEngine — payment_request context", () => {
     return result.find((s) => s.code === "payment_request")?.present ?? false;
   }
 
-  it("keeps flagging genuine payment demands", () => {
-    // The brief's must-still-flag cases, as the pipeline delivers them: a
-    // payment instruction is extracted as a 'fee' claim, and the untouched
-    // payment phrasing patterns also catch demands in any other claim type.
-    expect(paymentFor("Pay Rs 5,000 to register")).toBe(true);
+  it("keeps flagging genuinely suspicious payment demands", () => {
+    expect(paymentFor("Pay Rs 5,000 to guarantee scholarship selection")).toBe(true);
     expect(paymentFor("Payment of Rs 5,000 is required to confirm your seat", "other")).toBe(true);
-    expect(paymentFor("Registration fee is required")).toBe(true);
-    expect(paymentFor("Send payment to reserve your place", "other")).toBe(true);
-    expect(paymentFor("A non-refundable application fee of €25 applies")).toBe(true);
-    // Refundability is about money BACK, never about it being absent
-    expect(paymentFor("A non-refundable registration fee of Rs 500 applies", "other")).toBe(true);
-    expect(paymentFor("The registration fee is not refundable")).toBe(true);
+    expect(paymentFor("Pay the fee to a personal bank account", "other")).toBe(true);
+    expect(paymentFor("Send a gift card payment today to unlock the application", "other")).toBe(true);
+  });
+
+  it("does not flag normal commercial prices, subscriptions, or official discounts", () => {
+    expect(paymentFor("A learning platform offers a 40% discount on three months of membership.")).toBe(false);
+    expect(paymentFor("The membership subscription costs $59 per month.")).toBe(false);
+    expect(paymentFor("Course tuition and checkout are shown on the official platform.")).toBe(false);
+  });
+
+  it("does not make supported first-party commercial pricing HIGH_RISK without government or academic sources", () => {
+    const commercialSignals = detectRiskSignals({
+      ...base,
+      sourceTypes: ["submitted", "unknown"],
+      hasAuthoritativeSupport: true,
+      claims: [
+        {
+          id: "c1",
+          text: "The platform offers a 40% discount on three months of its membership subscription.",
+          type: "fee",
+          importance: "critical",
+          status: "supported",
+        },
+      ],
+    });
+    const decision = calculateTrustDecision(
+      input({
+        claims: [claim("c1", "supported", "critical", "fee")],
+        evidence: [evidence("c1", "s9")],
+        sources: [SUBMITTED],
+        firstPartyDomains: ["banoqabil.org"],
+        riskSignals: commercialSignals,
+      }),
+    );
+
+    expect(commercialSignals.find((s) => s.code === "payment_request")?.present).toBe(false);
+    expect(commercialSignals.find((s) => s.code === "weak_source_authority")?.present).toBe(false);
+    expect(decision.verdict).toBe("VERIFIED");
   });
 
   it("does not flag negated or free registration wording", () => {
@@ -595,11 +681,11 @@ describe("riskEngine — payment_request context", () => {
     expect(paymentFor("The participation fee is waived for students")).toBe(false);
   });
 
-  it("keeps a real demand when a different clause mentions free", () => {
+  it("keeps a suspicious demand when a different clause mentions free", () => {
     expect(
-      paymentFor("Workshops are free of charge, but a registration fee is required to apply"),
+      paymentFor("Workshops are free of charge, but pay a registration fee to guarantee your seat"),
     ).toBe(true);
-    expect(paymentFor("Travel is not covered. A processing fee of Rs 500 applies.", "other")).toBe(
+    expect(paymentFor("Travel is not covered. Send payment via wire transfer to unlock your application.", "other")).toBe(
       true,
     );
   });
@@ -611,7 +697,7 @@ describe("riskEngine — payment_request context", () => {
       sourceTypes: ["submitted", "unknown"],
       hasAuthoritativeSupport: true,
       claims: [
-        { id: "c1", text: "Registration fee is required", type: "fee", importance: "critical", status: "supported" },
+        { id: "c1", text: "Registration fee is required to guarantee your seat", type: "fee", importance: "critical", status: "supported" },
       ],
     });
     const decision = calculateTrustDecision(

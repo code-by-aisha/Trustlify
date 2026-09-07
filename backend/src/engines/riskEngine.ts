@@ -7,8 +7,9 @@
  *
  * Signals:
  *   suspicious_redirect   — submitted URL redirected to a different domain
- *   payment_request       — the content asks the reader for payment/fees
- *   weak_source_authority — no INDEPENDENT (government/academic) source
+ *   payment_request       — the content asks for a SUSPICIOUS payment
+ *   weak_source_authority — no government/academic or supported first-party
+ *                           source establishes the claims
  *   identity_mismatch     — an organization/identity claim is contradicted
  *   unresolved_contradiction — a critical claim conflicts across sources
  *   missing_official_confirmation — the organization claim is not supported
@@ -42,14 +43,25 @@ export interface RiskEngineInput {
 }
 
 /**
- * Deterministic payment/fee request wording in claim text.
- * Matches fee-type claims and payment-demand phrasing in any claim text.
+ * Deterministic wording that makes a payment demand suspicious. Ordinary
+ * commercial pricing is not a fraud signal: a product price, membership,
+ * subscription, tuition/course fee, sale, or discount can be an expected part
+ * of a legitimate service. The risk signal is reserved for payments connected
+ * to a promised outcome, an unusual destination/channel, or urgent pressure.
  */
+const SUSPICIOUS_PAYMENT_PATTERNS: RegExp[] = [
+  /\b(?:pay|payment|fee).{0,80}\b(?:guarantee|guaranteed|secure|confirm|unlock).{0,80}\b(?:acceptance|admission|selection|scholarship|grant|opportunity|seat|application)\b/i,
+  /\b(?:acceptance|admission|selection|scholarship|grant|opportunity|seat|application).{0,80}\b(?:requires?|after)\s+(?:a\s+)?(?:pay|payment|fee)\b/i,
+  /\b(?:crypto|bitcoin|usdt|gift\s*card|western\s+union|money\s*gram|wire\s+transfer)\b/i,
+  /\b(?:personal|individual|private)\s+(?:bank\s+)?account\b/i,
+  /\b(?:pay|payment|fee).{0,80}\b(?:urgent|urgently|immediately|today|within\s+\d+\s*(?:hours?|days?))\b/i,
+];
+
+/** A normal commercial transaction in the organization's stated service. */
+const NORMAL_COMMERCIAL_PAYMENT_RE =
+  /\b(?:price|pricing|subscription|membership|paid\s+plan|course\s+fee|tuition|checkout|discount|sale)\b/i;
+
 const PAYMENT_PATTERNS: RegExp[] = [
-  /\bpay(?:ment|ment\s+fee|\s+now|\s+via)\b/i,
-  /\bapplication\s+fee\b/i,
-  /\bprocessing\s+fee\b/i,
-  /\bregistration\s+fee\b/i,
   /\bwire\s+transfer\b/i,
   /\bmoney\s?gram\b/i,
   /\bwestern\s+union\b/i,
@@ -84,10 +96,6 @@ const PAYMENT_NEGATION_RE =
  */
 const REFUNDABILITY_RE = /\b(?:non[- ]?refundable|not\s+refundable|refundable)\b/gi;
 
-/** An explicit "it costs nothing" statement (covers 'free of charge'). */
-const FREE_STATEMENT_RE =
-  /\bfree\b|\bno\s+(?:\S+\s+)?(?:fee|payment|charges?|cost)\b|\bwithout\s+(?:any\s+)?(?:fee|payment|charge|cost)\b|\b(?:fee|payment|charge|cost)\s+(?:is\s+|are\s+)?waived\b|\bzero\s+(?:fee|cost|charge)\b|\bat\s+no\s+cost\b|\b(?:do(?:es)?\s+not|do(?:es)?n'?t|\w+\s+(?:is|are)\s+not)\s+(?:charge|cost|required|necessary|applicable)\b/i;
-
 function clausesOf(text: string): string[] {
   return text
     .split(CLAUSE_SPLIT_RE)
@@ -105,34 +113,26 @@ function negatesPayment(clause: string): boolean {
  * the clause must also be free of negation ("No registration fee is required"
  * is a clause that mentions a fee to say it does not exist).
  */
-function clauseDemandsPayment(clause: string): boolean {
-  if (!PAYMENT_PATTERNS.some((pattern) => pattern.test(clause))) return false;
-  return !negatesPayment(clause);
-}
-
-/** True when the text states anywhere that nothing has to be paid. */
-function statesNoPayment(text: string): boolean {
-  return clausesOf(text).some(
-    (clause) =>
-      FREE_STATEMENT_RE.test(clause) ||
-      (negatesPayment(clause) && PAYMENT_PATTERNS.some((pattern) => pattern.test(clause))),
+function clauseDemandsSuspiciousPayment(clause: string): boolean {
+  if (negatesPayment(clause)) return false;
+  if (SUSPICIOUS_PAYMENT_PATTERNS.some((pattern) => pattern.test(clause))) return true;
+  // A payment request with an unusual channel remains suspicious even if its
+  // wording does not name a fee explicitly.
+  return (
+    PAYMENT_PATTERNS.some((pattern) => pattern.test(clause)) &&
+    !NORMAL_COMMERCIAL_PAYMENT_RE.test(clause)
   );
 }
 
 /**
- * Does this claim actually assert a payment requirement?
+ * Does this claim assert a suspicious payment demand?
  *
- *  · Any unnegated payment-demand clause → yes ("Pay Rs 5,000 to register.").
- *  · A 'fee'-type claim with no such clause is still a fee requirement UNLESS
- *    its own wording says the fee is absent or free — the claim TYPE is about
- *    the topic (a fee claim may assert "registration is free"), so on its own
- *    it is never proof that money is requested.
- *  · Any other claim → only an unnegated demand counts.
+ * A `fee` type is a topic label, not proof of fraud. It can describe an
+ * ordinary subscription, tuition, course price, or official discount. Only
+ * explicit suspicious context creates the strong risk signal.
  */
-function claimAssertsPayment(claim: { text: string; type: string }): boolean {
-  if (clausesOf(claim.text).some(clauseDemandsPayment)) return true;
-  if (claim.type === "fee") return !statesNoPayment(claim.text);
-  return false;
+function claimAssertsSuspiciousPayment(claim: { text: string; type: string }): boolean {
+  return clausesOf(claim.text).some(clauseDemandsSuspiciousPayment);
 }
 
 /**
@@ -151,10 +151,10 @@ export function detectRiskSignals(input: RiskEngineInput): RiskSignal[] {
       claim.importance === "critical" &&
       (claim.status === "conflicting" || claim.status === "contradicted"),
   );
-  const hasAuthoritativeSource = input.sourceTypes.some(
+  const hasGovernmentOrAcademicSource = input.sourceTypes.some(
     (type) => type === "government" || type === "academic",
   );
-  const paymentClaim = input.claims.find(claimAssertsPayment);
+  const paymentClaim = input.claims.find(claimAssertsSuspiciousPayment);
 
   signals.push({
     code: "suspicious_redirect",
@@ -169,19 +169,21 @@ export function detectRiskSignals(input: RiskEngineInput): RiskSignal[] {
     code: "payment_request",
     present: Boolean(paymentClaim),
     detail: paymentClaim
-      ? `The content requests a payment: "${truncate(paymentClaim.text, 120)}".`
-      : "The content requests a payment.",
+      ? `The content requests a suspicious payment: "${truncate(paymentClaim.text, 120)}".`
+      : "The content requests a suspicious payment.",
   });
 
   signals.push({
     code: "weak_source_authority",
-    present: !hasAuthoritativeSource,
-    // 'Independent' on purpose: the organization's own first-party page can be
-    // an authoritative WITNESS (see the Trust Engine authority gate) but it is
-    // never outside corroboration, so it does not clear this signal.
-    detail: hasAuthoritativeSource
+    present: !hasGovernmentOrAcademicSource && !input.hasAuthoritativeSupport,
+    // Contextual authority: government/academic corroboration is strongest for
+    // public and university opportunities, while analyzed, boundary-safe
+    // first-party support is meaningful primary evidence for commercial sites.
+    detail: hasGovernmentOrAcademicSource
       ? "An independent government or academic source was found."
-      : "No independent (government or academic) source was found for this opportunity.",
+      : input.hasAuthoritativeSupport
+        ? "A first-party official source supports the key claims."
+        : "No government, academic, or supported first-party source was found for this opportunity.",
   });
 
   const identityMismatch = organizationClaims.some(

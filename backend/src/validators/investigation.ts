@@ -13,6 +13,14 @@ import { urlInputSchema } from "../utils/urls.js";
  */
 export const MAX_QUESTION_LENGTH = 500;
 
+function urlValidationMessage(raw: string): string {
+  const value = raw.trim();
+  if (/^(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:[/?#].*)?$/i.test(value)) {
+    return "Your link looks incomplete. Please include https://, for example https://example.com.";
+  }
+  return "This doesn't look like a valid website link. Please enter a complete URL, such as https://example.com.";
+}
+
 export const createInvestigationSchema = z
   .object({
     inputType: z.enum(["url", "text", "image", "pdf"]),
@@ -32,7 +40,7 @@ export const createInvestigationSchema = z
       if (!data.inputText) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "inputText (URL) is required when inputType is 'url'",
+          message: "This doesn't look like a valid website link. Please enter a complete URL, such as https://example.com.",
           path: ["inputText"],
         });
       } else {
@@ -40,7 +48,7 @@ export const createInvestigationSchema = z
         if (!result.success) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: result.error.issues[0]?.message ?? "Invalid URL",
+            message: urlValidationMessage(data.inputText),
             path: ["inputText"],
           });
         }

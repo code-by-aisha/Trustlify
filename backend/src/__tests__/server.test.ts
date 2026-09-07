@@ -148,6 +148,21 @@ describe("Zod validation", () => {
       inputText: "not-a-valid-url",
     });
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain("doesn't look like a valid website link");
+    }
+  });
+
+  it("explains a missing URL protocol without changing the submitted destination", async () => {
+    const { createInvestigationSchema } = await import("../validators/investigation.js");
+    const result = createInvestigationSchema.safeParse({
+      inputType: "url",
+      inputText: "example.com",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain("include https://");
+    }
   });
 
   it("accepts valid investigation with URL input", async () => {

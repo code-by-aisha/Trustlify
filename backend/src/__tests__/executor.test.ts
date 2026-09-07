@@ -623,8 +623,7 @@ describe("executor — URL input", () => {
     // Surgical fix #2: the named category and the received status replace the
     // old generic "could not be fetched safely" line.
     expect(result.failureCode).toBe("FETCH_FAILED");
-    expect(result.errorMessage).toContain("could not reach this page");
-    expect(result.errorMessage).toContain("status 404");
+    expect(result.errorMessage).toContain("could not be found (404)");
     // No AI credits spent when there is no content
     expect(calls.extractClaimsCalls).toBe(0);
   });
@@ -655,7 +654,7 @@ describe("executor — content failure categories", () => {
     const result = await runInvestigation("inv-1", deps, store);
 
     expect(result.failureCode).toBe("INVALID_URL");
-    expect(result.errorMessage).toContain("public web page link");
+    expect(result.errorMessage).toContain("link looks invalid");
     expect(result.errorMessage).toContain("paste the opportunity text");
     // Rejected before any request or AI spend
     expect(calls.fetchContentCalls).toBe(0);
@@ -848,7 +847,7 @@ describe("executor — first-party page with a free registration", () => {
 
   it("a genuine payment demand on the same first-party page still reaches HIGH_RISK", async () => {
     const { deps, store, decisions } = runFees(
-      "A registration fee of Rs 5,000 is required to confirm your seat",
+      "A registration fee of Rs 5,000 is required to guarantee your seat",
     );
 
     const result = await runInvestigation("inv-1", deps, store);
@@ -857,7 +856,7 @@ describe("executor — first-party page with a free registration", () => {
     // The only difference from the passing case above is an unnegated demand:
     // payment detection is context-aware, not disabled.
     expect(result.verdict).toBe("HIGH_RISK");
-    expect(decisions[0]!.reasons.some((reason) => reason.includes("requests a payment"))).toBe(
+    expect(decisions[0]!.reasons.some((reason) => reason.includes("requests a suspicious payment"))).toBe(
       true,
     );
   });
@@ -1086,6 +1085,27 @@ describe("executor — provider failures", () => {
     expect(calls.analyzeEvidenceCalls).toBe(1); // exactly one attempt, no retry
   });
 
+  it.each([
+    [new AIError("AI_REQUEST_FAILED", "provider capacity", 503), "experiencing high demand"],
+    [new AIError("AI_RATE_LIMITED", "provider rate limit", 429), "temporarily rate-limited"],
+  ])("keeps exhausted AI error %s as FAILED with an actionable message", async (error, message) => {
+    const { deps } = createFakeDeps({
+      analyzeEvidence: async () => {
+        throw error;
+      },
+    });
+    const { store, decisions } = createFakeStore();
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(result.finalStatus).toBe("failed");
+    expect(result.finalStage).toBe("ANALYZING_EVIDENCE");
+    expect(result.verdict).toBeNull();
+    expect(result.errorMessage).toContain(message);
+    expect(result.errorMessage).toContain("not a finding about this website");
+    expect(decisions).toHaveLength(0);
+  });
+
   it("keeps source metadata and marks content unavailable when a source fetch fails", async () => {
     const { deps, calls } = createFakeDeps({
       fetchContent: async () => {
@@ -1189,6 +1209,42 @@ describe("executor — fabricated excerpts are never trusted", () => {
     expect(result.verdict).toBeNull();
     expect(result.errorMessage).toContain("Trustlify service issue");
   });
+
+  it("reserves the bounded evidence-analysis set for critical claims before lower-priority identity claims", async () => {
+    const identityClaims = Array.from({ length: 8 }, (_, i) => ({
+      text: `Organization detail ${i + 1}`,
+      type: "organization" as const,
+      importance: "important" as const,
+    }));
+    const criticalFunding = {
+      text: "The scholarship is fully funded",
+      type: "funding" as const,
+      importance: "critical" as const,
+    };
+    const { deps, calls } = createFakeDeps({
+      extractClaims: async () => ({ claims: [...identityClaims, criticalFunding] }),
+      analyzeEvidence: async (input) => ({
+        evidence: input.claims.map((claim) => ({
+          claimId: claim.id,
+          sourceId: input.sources[0]!.id,
+          relation: "supports" as const,
+          excerpt: input.passages[0]!.text.slice(0, 40),
+          reason: "The source passage supports the claim.",
+          confidence: "high" as const,
+        })),
+      }),
+    });
+    const { store, claimUpdates } = createFakeStore();
+
+    const result = await runInvestigation("inv-1", deps, store);
+
+    expect(calls.analyzeInputs[0]!.claims).toHaveLength(8);
+    expect(calls.analyzeInputs[0]!.claims.map((claim) => claim.text)).toContain(
+      criticalFunding.text,
+    );
+    expect(claimUpdates.find((claim) => claim.status === "supported")).toBeDefined();
+    expect(result.verdict).toBe("VERIFIED");
+  });
 });
 
 /* ─── Safe failure messages (spec 33) ─────────────────────────────────────── */
@@ -1196,8 +1252,8 @@ describe("executor — fabricated excerpts are never trusted", () => {
 describe("safeFailureMessage", () => {
   it("passes through input validation messages (user-input problems)", () => {
     expect(
-      safeFailureMessage(new InputValidationError("URL input requires a non-empty inputText")),
-    ).toBe("URL input requires a non-empty inputText");
+      safeFailureMessage(new InputValidationError("Your link looks invalid.")),
+    ).toBe("Your link looks invalid.");
   });
 
   it("maps AI errors to a safe message without provider internals", () => {
@@ -1222,7 +1278,7 @@ describe("safeFailureMessage", () => {
       new WebFetchError("PRIVATE_ADDRESS", "host resolves to 10.0.0.1"),
     );
     // Specific category (the address is not a public page) …
-    expect(message).toContain("public web page link");
+    expect(message).toContain("link looks invalid");
     // … and the resolved internal address still never reaches the user.
     expect(message).not.toContain("10.0.0.1");
   });
@@ -1231,6 +1287,15 @@ describe("safeFailureMessage", () => {
     expect(safeFailureMessage(new Error("raw sql: select * from secrets"))).toBe(
       "Investigation failed — please try again later.",
     );
+  });
+
+  it("maps exhausted AI capacity and rate-limit failures to actionable service messages", () => {
+    expect(
+      safeFailureMessage(new AIError("AI_REQUEST_FAILED", "provider detail", 503), "ANALYZING_EVIDENCE"),
+    ).toContain("experiencing high demand");
+    expect(
+      safeFailureMessage(new AIError("AI_RATE_LIMITED", "provider detail", 429), "ANALYZING_EVIDENCE"),
+    ).toContain("temporarily rate-limited");
   });
 });
 

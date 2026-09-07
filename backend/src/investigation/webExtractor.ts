@@ -103,8 +103,8 @@ export interface ContentFailure {
 /** WHAT happened (+why), then WHAT the user can do next. */
 const CONTENT_FAILURE_MESSAGES: Record<ContentFailureCode, { what: string; next: string }> = {
   INVALID_URL: {
-    what: "That address is not a public web page link Trustlify can open (only http(s) pages are supported)",
-    next: "Check the link, or paste the opportunity text here instead.",
+    what: "Your link looks invalid or incomplete",
+    next: "Enter a complete website URL, such as https://example.com, or paste the opportunity text here instead.",
   },
   FETCH_FAILED: {
     what: "Trustlify could not reach this page, so its content could not be read",
@@ -134,6 +134,9 @@ const CONTENT_FAILURE_MESSAGES: Record<ContentFailureCode, { what: string; next:
  * numeric status / curated reason, so no provider internals or addresses leak.
  */
 export function describeContentFailure(failure: ContentFailure): string {
+  if (failure.code === "FETCH_FAILED" && failure.status === 404) {
+    return "This page could not be found (404). Check the link and try again.";
+  }
   const entry = CONTENT_FAILURE_MESSAGES[failure.code];
   const detail =
     failure.status !== undefined

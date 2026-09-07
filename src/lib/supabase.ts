@@ -86,7 +86,12 @@ export async function apiFetch(path: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: { message: response.statusText } }))
-    const serverMessage = body?.error?.message || body?.message
+    const validationDetail = body?.error?.code === 'VALIDATION_ERROR'
+      ? body?.error?.details?.find((detail: unknown) =>
+          typeof detail === 'object' && detail !== null && typeof (detail as { message?: unknown }).message === 'string',
+        ) as { message: string } | undefined
+      : undefined
+    const serverMessage = validationDetail?.message || body?.error?.message || body?.message
     // 5xx details stay in the server logs — the user gets a safe line.
     const message = response.status >= 500
       ? 'Trustlify could not complete that request. Please try again.'

@@ -539,9 +539,8 @@ describe("webExtractor — content failure taxonomy", () => {
     expect(failure.status).toBe(404);
 
     const message = describeContentFailure(failure);
-    expect(message).toContain("could not reach this page"); // WHAT
-    expect(message).toContain("status 404"); // WHY (numeric only)
-    expect(message).toContain("Open the link in your browser"); // NEXT
+    expect(message).toContain("could not be found (404)");
+    expect(message).toContain("Check the link and try again");
     expect(message).not.toContain("ECONNREFUSED");
     expect(message).not.toContain("10.0.0.1");
   });
@@ -576,7 +575,7 @@ describe("webExtractor — content failure taxonomy", () => {
     expect(isContentFailureCode("REDIRECTED")).toBe(false);
     expect(isContentFailureCode("SUCCESS")).toBe(false);
     expect(isContentFailureCode("ACCESS_BLOCKED")).toBe(true);
-    expect(describeContentFailure({ code: "INVALID_URL" })).toContain("not a public web page link");
+    expect(describeContentFailure({ code: "INVALID_URL" })).toContain("link looks invalid");
   });
 });
 

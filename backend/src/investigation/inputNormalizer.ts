@@ -105,13 +105,18 @@ export function normalizeInvestigationInput(
   if (inputType === "url") {
     const raw = (args.inputText ?? "").trim();
     if (!raw) {
-      throw new InputValidationError("URL input requires a non-empty inputText");
+      throw new InputValidationError(
+        "Your link looks invalid. Please enter a complete website URL, such as https://example.com.",
+      );
     }
     // Full SSRF protection: http(s) only, no private/internal hostnames.
     const urlResult = urlInputSchema.safeParse(raw);
     if (!urlResult.success) {
+      const looksLikeMissingProtocol = /^(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:[/?#].*)?$/i.test(raw);
       throw new InputValidationError(
-        urlResult.error.issues[0]?.message ?? "Invalid or unsafe URL",
+        looksLikeMissingProtocol
+          ? "This link is incomplete. Please include the full website address, such as https://example.com."
+          : "Your link looks invalid. Please enter a complete website URL, such as https://example.com.",
       );
     }
     const info = parseUrlInfo(urlResult.data);

@@ -95,4 +95,23 @@ describe('apiFetch', () => {
     expect(err.status).toBe(400)
     expect(err.message).toBe('portfolioUrl must be a valid URL')
   })
+
+  it('uses the typed validation detail when the backend has a generic validation summary', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse(400, {
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed',
+          details: [{ path: 'inputText', message: 'Your link looks incomplete. Please include https://, for example https://example.com.' }],
+        },
+      }),
+    )
+
+    const err = await apiFetch('/api/investigations', { method: 'POST' }).catch((e) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.message).toContain('link looks incomplete')
+    expect(err.message).not.toContain('Request validation failed')
+  })
 })

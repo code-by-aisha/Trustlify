@@ -143,6 +143,15 @@ describe("category 3 — invalid URL", () => {
     ).toThrow(InputValidationError);
   });
 
+  it("explains missing protocols without silently changing the destination", () => {
+    expect(() =>
+      normalizeInvestigationInput({ inputType: "url", inputText: "www.example.com" }),
+    ).toThrow("This link is incomplete");
+    expect(() =>
+      normalizeInvestigationInput({ inputType: "url", inputText: "example.com" }),
+    ).toThrow("This link is incomplete");
+  });
+
   it("rejects whitespace-only URL input", () => {
     expect(() =>
       normalizeInvestigationInput({ inputType: "url", inputText: "   " }),

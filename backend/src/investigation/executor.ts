@@ -7,8 +7,10 @@
  *   READING_SOURCES → ANALYZING_EVIDENCE → CALCULATING_TRUST → COMPLETE
  *
  * Credit contract (STRICT, spec 40):
- *   - exactly ONE Gemini claim-extraction request
- *   - exactly ONE Gemini evidence-analysis request
+ *   - exactly ONE Gemini claim-extraction logical operation (at most two HTTP
+ *     attempts for a transient provider failure)
+ *   - exactly ONE Gemini evidence-analysis logical operation (at most two HTTP
+ *     attempts for a transient provider failure)
  *   - AT MOST 3 Tavily search requests (fewer when a strong official source
  *     is already found — spec 15)
  *   - AT MOST 3 selected source page fetches
@@ -110,6 +112,27 @@ export type InvestigationStage = (typeof INVESTIGATION_STAGES)[number];
 const MAX_CLAIMS = 20;
 /** Claims sent to the single evidence-analysis request (highest ranked). */
 const MAX_ANALYSIS_CLAIMS = 8;
+
+/**
+ * Pick the claims sent to the one bounded evidence-analysis call.
+ *
+ * `rankClaims` deliberately puts organization identity first for search
+ * planning, but that ordering can place many non-critical identity mentions
+ * ahead of a critical funding, deadline, eligibility, or fee claim. A claim
+ * that affects the final verdict must not be excluded merely by that search
+ * ordering. Keep the existing deterministic rank within each group, reserve
+ * the fixed analysis budget for critical claims first, then fill remaining
+ * slots with the already-ranked lower-priority claims. No extra model call is
+ * introduced.
+ */
+export function selectClaimsForEvidenceAnalysis<T extends InvestigatorClaim>(
+  rankedClaims: T[],
+  maxClaims: number = MAX_ANALYSIS_CLAIMS,
+): T[] {
+  const critical = rankedClaims.filter((claim) => claim.importance === "critical");
+  const nonCritical = rankedClaims.filter((claim) => claim.importance !== "critical");
+  return [...critical, ...nonCritical].slice(0, maxClaims);
+}
 
 /* ─── Injectable dependencies (tests pass fakes — never live providers) ───── */
 
@@ -441,6 +464,22 @@ function contentFailureFrom(error: unknown): ContentFailure | null {
 export const EVIDENCE_ANALYSIS_FAILURE_MESSAGE =
   "The sources were fetched successfully, but Trustlify could not complete the evidence analysis — this is a Trustlify service issue, not a finding about this website. Please run the investigation again in a few minutes.";
 
+function aiServiceFailureMessage(error: AIError, stage?: string): string {
+  let message: string;
+  if (error.code === "AI_RATE_LIMITED") {
+    message = "Trustlify's AI service is temporarily rate-limited. Please try again shortly.";
+  } else if (error.code === "AI_REQUEST_FAILED" && error.httpStatus === 503) {
+    message = "Trustlify's AI service is experiencing high demand. Please try again in a few minutes.";
+  } else if (error.code === "AI_REQUEST_FAILED" && error.httpStatus === undefined) {
+    message = "Trustlify couldn't reach its AI service right now. Please try again later.";
+  } else {
+    message = "Trustlify's AI service is temporarily unavailable. Please try again later.";
+  }
+  return stage === "ANALYZING_EVIDENCE"
+    ? `${message} This is a Trustlify service issue, not a finding about this website.`
+    : message;
+}
+
 /**
  * Map any executor failure to a safe, user-facing message.
  * Never includes API keys, internal details, SQL, or stack traces — those go
@@ -460,10 +499,7 @@ export function safeFailureMessage(error: unknown, stage?: string): string {
     return describeContentFailure(contentFailureFromFetchError(error));
   }
   if (error instanceof AIError) {
-    if (stage === "ANALYZING_EVIDENCE") {
-      return EVIDENCE_ANALYSIS_FAILURE_MESSAGE;
-    }
-    return "The AI service could not complete this investigation. Please try again later.";
+    return aiServiceFailureMessage(error, stage);
   }
   if (error instanceof SearchError) {
     return "Web search failed — the search service could not complete this investigation. Please try again later.";
@@ -909,8 +945,7 @@ export async function runInvestigation(
 
     let validatedEvidence: VerifiedEvidence[] = [];
     if (investigatorSources.length > 0) {
-      const analysisClaims: InvestigatorClaim[] = ranked
-        .slice(0, MAX_ANALYSIS_CLAIMS)
+      const analysisClaims: InvestigatorClaim[] = selectClaimsForEvidenceAnalysis(ranked)
         .map((claim) => ({
           id: claim.id,
           text: claim.text,

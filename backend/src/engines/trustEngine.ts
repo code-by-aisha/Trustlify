@@ -9,9 +9,9 @@
  *
  * ─── VERDICT RULES (spec 27) — first match wins ────────────────────────────
  *
- *   1. HIGH_RISK  — a strong risk pattern coexists with weak evidence:
- *        (payment_request AND (suspicious_redirect OR weak_source_authority))
- *        OR identity_mismatch with payment_request
+ *   1. HIGH_RISK  — a suspicious payment demand, identity mismatch coupled
+ *        with payment pressure, or several risk signals coexist with weak
+ *        evidence. Ordinary commercial pricing never creates payment_request.
  *        OR ≥3 risk signals present while no critical claim is
  *           supported by an authoritative source
  *
@@ -25,7 +25,9 @@
  *
  *   4. VERIFIED   — every critical claim is supported by credible evidence,
  *        at least one by an authoritative source, and no material
- *        contradiction exists.
+ *        contradiction exists. When an extraction contains no critical claims,
+ *        supported authoritative organization/opportunity evidence can satisfy
+ *        the same gate, provided no important claim materially conflicts.
  *
  *   5. UNVERIFIED (fallback) — never force certainty.
  *
@@ -257,13 +259,12 @@ function decideVerdict(
 ): Verdict {
   const paymentRequest = signal(input.riskSignals, "payment_request");
   const suspiciousRedirect = signal(input.riskSignals, "suspicious_redirect");
-  const weakAuthority = signal(input.riskSignals, "weak_source_authority");
   const identityMismatch = signal(input.riskSignals, "identity_mismatch");
   const presentSignals = input.riskSignals.filter((s) => s.present).length;
 
   // Rule 1 — HIGH_RISK: strong risk pattern with weak evidence
   const strongRiskPattern =
-    (paymentRequest && (suspiciousRedirect || weakAuthority)) ||
+    paymentRequest ||
     (identityMismatch && paymentRequest) ||
     (presentSignals >= 3 && !facts.authoritativeSupport);
 
@@ -291,7 +292,25 @@ function decideVerdict(
   const allCriticalSupported =
     facts.criticalClaims.length > 0 &&
     facts.criticalSupported.length === facts.criticalClaims.length;
-  if (allCriticalSupported && facts.authoritativeSupport) {
+  const supportedEntityOrOpportunity = input.claims.some(
+    (claim) =>
+      claim.importance === "important" &&
+      claim.status === "supported" &&
+      (claim.type === "organization" || claim.type === "opportunity"),
+  );
+  const materialNonCriticalConflict = input.claims.some(
+    (claim) =>
+      claim.importance === "important" &&
+      (claim.status === "conflicting" || claim.status === "contradicted"),
+  );
+  const supportedEntityWithoutCriticalClaims =
+    facts.criticalClaims.length === 0 &&
+    supportedEntityOrOpportunity &&
+    !materialNonCriticalConflict;
+  if (
+    facts.authoritativeSupport &&
+    (allCriticalSupported || supportedEntityWithoutCriticalClaims)
+  ) {
     return "VERIFIED";
   }
 

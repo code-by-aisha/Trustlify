@@ -16,7 +16,8 @@
  * Security:
  *   - API key is sent via the x-goog-api-key header (never in the URL)
  *   - Error messages are scrubbed of the API key before surfacing
- *   - No retry loops, no fallback models — exactly one request per call
+ *   - One bounded retry for transient provider/transport failures; no fallback
+ *     models or unbounded retry loops
  *   - Evidence passages are UNTRUSTED webpage text: the analysis prompt
  *     instructs the model to treat them as inert data and ignore any
  *     instructions contained within them (spec 22 prompt-injection defense)
@@ -24,6 +25,7 @@
 
 import { z } from "zod";
 import { env } from "../config/env.js";
+import { logger } from "../utils/logger.js";
 import { AIError } from "./errors.js";
 import type {
   AIProvider,
@@ -531,7 +533,8 @@ export class GeminiProvider implements AIProvider {
   /**
    * Extract discrete claims from raw input using Gemini structured output.
    * Supports multimodal inputs: an inline image/PDF payload plus optional text.
-   * Makes exactly one API request — no retries, no fallbacks.
+   * Makes one logical Gemini operation, with at most one transient retry and
+   * no fallback model.
    */
   async extractClaims(input: ExtractClaimsInput): Promise<ExtractClaimsOutput> {
     if (!this.apiKey) {
@@ -566,15 +569,15 @@ export class GeminiProvider implements AIProvider {
       },
     };
 
-    const body = await this.request(requestBody);
+    const body = await this.request(requestBody, "claim_extraction");
     return parseGeminiResponseBody(body);
   }
 
   /**
    * Analyze retrieved source content against claims — the second and final
-   * Gemini reasoning call of an investigation (spec 20). Exactly one request;
-   * excerpt validation happens downstream in the investigator (never trusted
-   * from the model).
+   * Gemini reasoning call of an investigation (spec 20). One logical request,
+   * with at most one transient retry; excerpt validation happens downstream in
+   * the investigator (never trusted from the model).
    */
   async analyzeEvidence(input: AnalyzeEvidenceInput): Promise<AnalyzeEvidenceOutput> {
     if (!this.apiKey) {
@@ -598,7 +601,7 @@ export class GeminiProvider implements AIProvider {
       },
     };
 
-    const body = await this.request(requestBody);
+    const body = await this.request(requestBody, "evidence_analysis");
     return parseAnalyzeEvidenceResponseBody(body);
   }
 
@@ -607,17 +610,53 @@ export class GeminiProvider implements AIProvider {
    * transport failures. Both callers reach this before persisting any claims
    * or evidence, so a retry cannot duplicate database records.
    */
-  private async request(requestBody: unknown): Promise<unknown> {
+  private async request(
+    requestBody: unknown,
+    operation: "claim_extraction" | "evidence_analysis",
+  ): Promise<unknown> {
     let lastError: unknown;
+    // Log metadata only: never request content, headers, or credentials.
+    const payloadBytes = Buffer.byteLength(JSON.stringify(requestBody), "utf8");
     for (let attempt = 1; attempt <= MAX_GEMINI_REQUEST_ATTEMPTS; attempt += 1) {
+      logger.debug("Gemini request attempt", {
+        operation,
+        attempt,
+        maxAttempts: MAX_GEMINI_REQUEST_ATTEMPTS,
+        model: this.model,
+        endpointPath: `/v1beta/models/${this.model}:generateContent`,
+        payloadBytes,
+      });
       try {
         return await this.requestOnce(requestBody);
       } catch (error) {
         lastError = error;
         if (!isTransientGeminiError(error) || attempt === MAX_GEMINI_REQUEST_ATTEMPTS) {
+          if (error instanceof AIError) {
+            logger.error("Gemini request failed", {
+              operation,
+              attempt,
+              maxAttempts: MAX_GEMINI_REQUEST_ATTEMPTS,
+              model: this.model,
+              payloadBytes,
+              code: error.code,
+              httpStatus: error.httpStatus,
+            });
+          }
           throw error;
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, this.retryDelayMs * attempt));
+        const delayMs = this.retryDelayMs * attempt;
+        logger.warn("Gemini request retry scheduled", {
+          operation,
+          failedAttempt: attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts: MAX_GEMINI_REQUEST_ATTEMPTS,
+          model: this.model,
+          payloadBytes,
+          code: error instanceof AIError ? error.code : undefined,
+          httpStatus: error instanceof AIError ? error.httpStatus : undefined,
+          delayMs,
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
       }
     }
     throw lastError;
